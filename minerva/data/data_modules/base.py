@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Callable
 
 import yaml
 
@@ -26,6 +26,8 @@ class MinervaDataModule(LightningDataModule):
         additional_val_dataloader_kwargs: Optional[dict] = None,
         additional_test_dataloader_kwargs: Optional[dict] = None,
         shuffle_train: bool = True,
+        # Sampler
+        sampler_cls: Optional[Callable] = None,
         # Metadata
         name: str = "",
         additional_describes: Optional[DataModuleDescriptor] = None,
@@ -65,6 +67,8 @@ class MinervaDataModule(LightningDataModule):
             If True, shuffle the training dataset. If False, do not shuffle the
             training dataset, by default True. By default, only the training
             dataloader is shuffled.
+        sampler_cls: callable, optional
+            Sampler class to use, if not set Torch's default will be used.
         name : str, optional
             Name of the data module, by default ""
         additional_describes : DataModuleDescriptor, optional
@@ -78,6 +82,7 @@ class MinervaDataModule(LightningDataModule):
         self._val_dataset = val_dataset
         self._test_dataset = test_dataset
         self._predict_split = predict_split
+        self._sampler_cls = sampler_cls
 
         if predict_split == "train":
             self._predict_dataset = train_dataset
@@ -173,19 +178,40 @@ class MinervaDataModule(LightningDataModule):
     def predict_dataset(self):
         return self._predict_dataset
 
+    def setup_sampler(self, sample_count, kwargs):
+        if self._sampler_cls is not None:
+            world_size = self.trainer.world_size if self.trainer else 1
+            global_rank = self.trainer.global_rank if self.trainer else 0
+            sampler = self._sampler_cls(
+                sample_count=sample_count,
+                shuffle=kwargs.get("shuffle"),
+                rank=global_rank,
+                world_size=world_size,
+                advance=self.trainer.global_step if self.trainer else 0
+            )
+            kwargs["shuffle"] = False  # avoids override with Torch's default RandomSampler
+            kwargs["sampler"] = sampler
+        return kwargs
+
     def train_dataloader(self):
-        return self._dataloader_cls(self.train_dataset, **self._train_dataloader_kwargs)
+        sample_count = len(self.train_dataset)
+        kwargs = self.setup_sampler(sample_count, self._train_dataloader_kwargs)
+        return self._dataloader_cls(self.train_dataset, **kwargs)
 
     def val_dataloader(self):
-        return self._dataloader_cls(self.val_dataset, **self._val_dataloader_kwargs)
+        sample_count = len(self.val_dataset)
+        kwargs = self.setup_sampler(sample_count, self._val_dataloader_kwargs)
+        return self._dataloader_cls(self.val_dataset, **kwargs)
 
     def test_dataloader(self):
-        return self._dataloader_cls(self.test_dataset, **self._test_dataloader_kwargs)
+        sample_count = len(self.test_dataset)
+        kwargs = self.setup_sampler(sample_count, self._test_dataloader_kwargs)
+        return self._dataloader_cls(self.test_dataset, **kwargs)
 
     def predict_dataloader(self):
-        return self._dataloader_cls(
-            self.predict_dataset, **self._predict_dataloader_kwargs
-        )
+        sample_count = len(self.predict_dataset)
+        kwargs = self.setup_sampler(sample_count, self._predict_dataloader_kwargs)
+        return self._dataloader_cls(self.predict_dataset, **kwargs)
 
     def __str__(self) -> str:
         def indent_text(text, spaces=6, add_line_breaks=True):

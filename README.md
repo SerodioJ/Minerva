@@ -144,7 +144,8 @@ pytest --cov=minerva --cov=tests --cov-report=term --cov-report=html
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is primarily licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Some files were derived from thid-party libraries and retain their original license. We provide the [licenses](THIRD_PARTY_LICENSES/) from the original repositories and included the appropriate copyright notices in the derived files' header. See the [THID PARTY LICENSES](THID_PARTY_LICENSES.md) file for details.
 
 ## Contact
 
