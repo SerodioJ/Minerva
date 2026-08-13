@@ -22,9 +22,6 @@ from torch.distributed._composable.fsdp import fully_shard
 from minerva.models.nets.image.dino import get_activation_checkpoint_wrapper, wrap_compile_block
 
 
-logger = logging.getLogger("dinov3")
-
-
 def drop_path(x: Tensor, drop_prob: float = 0.0, training: bool = False) -> Tensor:
     if drop_prob == 0.0 or not training:
         return x
@@ -157,7 +154,7 @@ class ConvNeXt(nn.Module):
     ):
         super().__init__()
         if len(ignored_kwargs) > 0:
-            logger.warning(f"Ignored kwargs: {ignored_kwargs}")
+            print(f"Ignored kwargs: {ignored_kwargs}")
         del ignored_kwargs
 
         # ==== ConvNeXt's original init =====

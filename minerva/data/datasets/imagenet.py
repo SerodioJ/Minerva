@@ -14,7 +14,7 @@ from typing import Callable, Optional, Tuple, Union, Literal
 import numpy as np
 from PIL import Image
 
-from minerva.data.datasets.supervised_dataset import SupervisedReconstructionDataset
+from minerva.data.datasets.base import SimpleDataset
 from minerva.data.readers.reader import _Reader
 
 
@@ -53,7 +53,7 @@ class _Split(Enum):
         return class_id, actual_index
 
 
-class ImageNet(SupervisedReconstructionDataset):
+class ImageNet(SimpleDataset):
     Split = Union[_Split]
 
     def __init__(

@@ -36,7 +36,10 @@ import numpy as np
 import lightning as L
 from lightning.pytorch.strategies import ModelParallelStrategy, DDPStrategy
 from lightning.pytorch.strategies.parallel import ParallelStrategy
+from lightning.pytorch.callbacks import ModelCheckpoint
 
+import torch
+from torch import Tensor, nn
 from torch.distributed._composable.fsdp import MixedPrecisionPolicy, fully_shard
 from torch.distributed.device_mesh import init_device_mesh
 
@@ -53,36 +56,26 @@ from minerva.callback.specific_checkpoint_callback import (
 )
 from minerva.transforms.dino import DataAugmentationDINO, MaskingGenerator
 from minerva.models.nets.image.dino import DINOHead, wrap_compile_block
-
-import torch
-from torch import Tensor, nn
-
-from pytorch_lightning.callbacks import ModelCheckpoint
-
 from minerva.models.ssl.base import _SSLTechnique
+from minerva.utils.instantiators import instantiate_cls
 
 
 @dataclass
 class LossConfig:
     # Dino loss
-    dino: Optional[DINOLoss] = None
     dino_loss_weight: float = 1.0
     local_loss_weight_schedule: Optional[Dict[str, int]] = None
     reweight_dino_local_loss: bool = False
     # KoLeo loss
-    koleo: Optional[Union[KoLeoLoss, KoLeoLossDistributed]] = None
     koleo_loss_distributed: bool = False
     koleo_loss_weight: float = 0.1
     koleo_loss_topk: int = 1
     koleo_distributed_loss_group_size: Optional[int] = None
     # iBot loss
-    ibot: Optional[iBOTPatchLoss] = None
     ibot_loss_weight: float = 1.0
     ibot_mask_sample_probability: float = 0.5
     ibot_mask_random_circular_shift: bool = False
     ibot_mask_ratio_min_max: Tuple[float, float] = (0.1, 0.5)
-    # Gram Loss
-    gram: Optional[GramLoss] = None
 
 
 @dataclass
@@ -175,6 +168,17 @@ class Schedules:
     gram_loss: Optional[Any] = None
 
 
+Config = Union[LossConfig, GramConfig, OptimConfig, MiscConfig]
+
+
+def init_config(config: Config, init: Optional[Union[Config, Dict[str, Any]]]):
+    if init is None:
+        return config()
+    if isinstance(init, dict):
+        return config(**init)
+    return init
+
+
 class _DINO(_SSLTechnique):
     def __init__(
         self,
@@ -193,11 +197,11 @@ class _DINO(_SSLTechnique):
         teacher_prediction_head: Optional[Union[DINOHead, nn.Module]] = None,
         centering: Literal["sinkhorn_knopp", "centering"] = "sinkhorn_knopp",
         # DataClass configs
-        loss: Optional[LossConfig] = None,
-        gram: Optional[GramConfig] = None,
-        crops: Optional[AugmentationConfig] = None,
-        optim: Optional[OptimConfig] = None,
-        misc: Optional[MiscConfig] = None,
+        loss: Optional[Union[LossConfig, Dict[str, Any]]] = None,
+        gram: Optional[Union[GramConfig, Dict[str, Any]]] = None,
+        crops: Optional[Union[AugmentationConfig, Dict[str, Any]]] = None,
+        optim: Optional[Union[OptimConfig, Dict[str, Any]]] = None,
+        misc: Optional[Union[MiscConfig, Dict[str, Any]]] = None,
         **kwargs,
     ):
         super().__init__(
@@ -213,11 +217,11 @@ class _DINO(_SSLTechnique):
         self.ibot_separate_head = ibot_separate_head
         self.centering = centering
 
-        self.loss = LossConfig() if loss is None else loss
-        self.gram = GramConfig() if gram is None else gram
-        self.crops = AugmentationConfig() if crops is None else crops
-        self.optim = OptimConfig() if optim is None else optim
-        self.misc = MiscConfig() if misc is None else misc
+        self.loss = init_config(LossConfig, loss)
+        self.gram = init_config(GramConfig, gram)
+        self.crops = init_config(AugmentationConfig, crops)
+        self.optim = init_config(OptimConfig, optim)
+        self.misc = init_config(MiscConfig, misc)
         self.schedules = Schedules()
 
         # Later init
@@ -307,10 +311,10 @@ class _DINO(_SSLTechnique):
         self.model_ema.requires_grad_(False)
 
         # Losses
-        self.loss.dino = DINOLoss(self.dino_out_dim, dino_version=self.dino_version)
+        self.dino_loss = DINOLoss(self.dino_out_dim, dino_version=self.dino_version)
 
         if self.loss.koleo_loss_distributed:
-            self.loss.koleo = KoLeoLossDistributed(
+            self.koleo_loss = KoLeoLossDistributed(
                 topk=self.loss.koleo_loss_topk,
                 loss_group_size=self.loss.koleo_distributed_loss_group_size,
             )
@@ -318,10 +322,10 @@ class _DINO(_SSLTechnique):
             assert (
                 self.loss.koleo_loss_topk == 1
             ), "Non-distributed KoLeo loss only supports `koleo_loss_topk=1`"
-            self.loss.koleo = KoLeoLoss()
+            self.koleo_loss = KoLeoLoss()
 
-        self.loss.ibot = iBOTPatchLoss(ibot_out_dim)
-        self.loss.gram = GramLoss(
+        self.ibot_loss = iBOTPatchLoss(ibot_out_dim)
+        self.gram_loss = GramLoss(
             apply_norm=self.gram.normalized,
             remove_only_teacher_neg=self.gram.remove_only_teacher_neg,
             remove_neg=self.gram.remove_neg,
@@ -640,8 +644,8 @@ class _DINO(_SSLTechnique):
         self.student.dino_head.init_weights()
         if self.ibot_separate_head:
             self.student.ibot_head.init_weights()
-        self.loss.dino.init_weights()
-        self.loss.ibot.init_weights()
+        self.dino_loss.init_weights()
+        self.ibot_loss.init_weights()
         self.model_ema.load_state_dict(self.student.state_dict())
         if self.has_gram_teacher:
             self.gram.backbone.init_weights()
@@ -800,7 +804,6 @@ class DINOv2(_DINO):
         backbone: nn.Module,
         learning_rate: float,
         # Dino Specific API
-        dino_version: Literal[2, 3],
         batch_size: int,
         epochs: int,
         iter_per_epoch: int,
@@ -811,18 +814,17 @@ class DINOv2(_DINO):
         teacher_prediction_head: Optional[Union[DINOHead, nn.Module]] = None,
         centering: Literal["sinkhorn_knopp", "centering"] = "sinkhorn_knopp",
         # DataClass configs
-        loss: Optional[LossConfig] = None,
-        gram: Optional[GramConfig] = None,
-        crops: Optional[AugmentationConfig] = None,
-        optim: Optional[OptimConfig] = None,
-        misc: Optional[MiscConfig] = None,
+        loss: Optional[Union[LossConfig, Dict[str, Any]]] = None,
+        crops: Optional[Union[AugmentationConfig, Dict[str, Any]]] = None,
+        optim: Optional[Union[OptimConfig, Dict[str, Any]]] = None,
+        misc: Optional[Union[MiscConfig, Dict[str, Any]]] = None,
         **kwargs,
     ):
 
-        loss = LossConfig() if loss is None else loss
-        crops = AugmentationConfig() if crops is None else crops
-        optim = OptimConfig() if optim is None else optim
-        misc = MiscConfig() if misc is None else misc
+        loss = init_config(LossConfig, loss)
+        crops = init_config(AugmentationConfig, crops)
+        optim = init_config(OptimConfig, optim)
+        misc = init_config(MiscConfig, misc)
 
         loss.koleo_loss_topk = 1
         loss.ibot_mask_random_circular_shift = False
@@ -900,19 +902,19 @@ class DINOv2(_DINO):
 
         if self.centering == "centering":
             teacher_dino_softmaxed_centered_list = (
-                self.loss.dino.softmax_center_teacher(
+                self.dino_loss.softmax_center_teacher(
                     teacher_cls_tokens_after_head, teacher_temp=teacher_temp
                 ).view(
                     n_global_crops_teacher, -1, *teacher_cls_tokens_after_head.shape[1:]
                 )
             )
-            self.loss.dino.update_center(teacher_cls_tokens_after_head)
+            self.dino_loss.update_center(teacher_cls_tokens_after_head)
             if self.loss.ibot_loss_weight > 0:
                 masked_teacher_patch_tokens_after_head = (
                     masked_teacher_patch_tokens_after_head.unsqueeze(0)
                 )
                 masked_teacher_ibot_softmaxed_centered = (
-                    self.loss.ibot.softmax_center_teacher(
+                    self.ibot_loss.softmax_center_teacher(
                         masked_teacher_patch_tokens_after_head[:, :n_masked_patches],
                         teacher_temp=teacher_temp,
                     )
@@ -920,13 +922,13 @@ class DINOv2(_DINO):
                 masked_teacher_ibot_softmaxed_centered = (
                     masked_teacher_ibot_softmaxed_centered.squeeze(0)
                 )
-                self.loss.ibot.update_center(
+                self.ibot_loss.update_center(
                     masked_teacher_patch_tokens_after_head[:n_masked_patches]
                 )
 
         elif self.centering == "sinkhorn_knopp":
             teacher_dino_softmaxed_centered_list = (
-                self.loss.dino.sinkhorn_knopp_teacher(
+                self.dino_loss.sinkhorn_knopp_teacher(
                     teacher_cls_tokens_after_head, teacher_temp=teacher_temp
                 ).view(
                     n_global_crops_teacher, -1, *teacher_cls_tokens_after_head.shape[1:]
@@ -935,7 +937,7 @@ class DINOv2(_DINO):
 
             if self.loss.ibot_loss_weight > 0:
                 masked_teacher_ibot_softmaxed_centered = (
-                    self.loss.ibot.sinkhorn_knopp_teacher(
+                    self.ibot_loss.sinkhorn_knopp_teacher(
                         masked_teacher_patch_tokens_after_head,
                         teacher_temp=teacher_temp,
                         n_masked_patches_tensor=n_masked_patches_tensor,
@@ -1051,7 +1053,7 @@ class DINOv2(_DINO):
             )[:n_masked_patches]
 
         if n_local_crops > 0:
-            dino_local_crops_loss = self.loss.dino(
+            dino_local_crops_loss = self.dino_loss(
                 student_output_list=student_local_cls_tokens_after_head.chunk(
                     n_local_crops
                 ),
@@ -1070,7 +1072,7 @@ class DINOv2(_DINO):
         if self.loss.dino_loss_weight > 0:
             # compute loss
             dino_global_crops_loss = (
-                self.loss.dino(
+                self.dino_loss(
                     student_output_list=[student_global_cls_tokens_after_head],
                     teacher_out_softmaxed_centered_list=[
                         teacher_dino_softmaxed_centered_list.flatten(0, 1)
@@ -1089,7 +1091,7 @@ class DINOv2(_DINO):
 
             if self.loss.koleo_loss_weight > 0:
                 koleo_loss = self.loss.koleo_loss_weight * sum(
-                    self.loss.koleo(p) for p in student_cls_tokens.chunk(2)
+                    self.koleo_loss(p) for p in student_cls_tokens.chunk(2)
                 )  # we don't apply koleo loss between cls tokens of a same image
                 loss_accumulator += koleo_loss
                 loss_dict["koleo_loss"] = (
@@ -1099,7 +1101,7 @@ class DINOv2(_DINO):
         if self.loss.ibot_loss_weight > 0:
             # compute loss
             ibot_patch_loss = (
-                self.loss.ibot.forward_masked(
+                self.ibot_loss.forward_masked(
                     student_global_masked_patch_tokens_after_head,
                     masked_teacher_ibot_softmaxed_centered,
                     student_masks_flat=masks,
@@ -1136,11 +1138,11 @@ class DINOv3(_DINO):
         teacher_prediction_head: Optional[Union[DINOHead, nn.Module]] = None,
         centering: Literal["sinkhorn_knopp", "centering"] = "sinkhorn_knopp",
         # DataClass configs
-        loss: Optional[LossConfig] = None,
-        gram: Optional[GramConfig] = None,
-        crops: Optional[AugmentationConfig] = None,
-        optim: Optional[OptimConfig] = None,
-        misc: Optional[MiscConfig] = None,
+        loss: Optional[Union[LossConfig, Dict[str, Any]]] = None,
+        gram: Optional[Union[GramConfig, Dict[str, Any]]] = None,
+        crops: Optional[Union[AugmentationConfig, Dict[str, Any]]] = None,
+        optim: Optional[Union[OptimConfig, Dict[str, Any]]] = None,
+        misc: Optional[Union[MiscConfig, Dict[str, Any]]] = None,
         **kwargs,
     ):
         assert ibot_separate_head is True
@@ -1278,12 +1280,12 @@ class DINOv3(_DINO):
         cls_after_head = self.teacher.dino_head(cls)  # [n_crops * B, K]
 
         # Center with sinkhorn-knopp
-        cls_centered = self.loss.dino.sinkhorn_knopp_teacher(
+        cls_centered = self.dino_loss.sinkhorn_knopp_teacher(
             cls_after_head,
             teacher_temp=teacher_temp,
         )  # [n_crops * B, K]
         cls_centered = cls_centered.unflatten(0, (n_crops, B))  # [n_crops, B, K]
-        masked_patch_centered = self.loss.ibot.sinkhorn_knopp_teacher(
+        masked_patch_centered = self.ibot_loss.sinkhorn_knopp_teacher(
             masked_patch_after_head,
             teacher_temp=teacher_temp,
             n_masked_patches_tensor=n_masked_patches_tensor,
@@ -1476,7 +1478,7 @@ class DINOv3(_DINO):
         koleo_scale = n_global_crops
 
         # DINO local loss: compare post-head CLS tokens: student(local crops) vs. teacher(global crops)
-        dino_local_crops_loss = self.loss.dino(
+        dino_local_crops_loss = self.dino_loss(
             student_logits=student_local["cls_after_head"],
             teacher_probs=teacher_global["cls_centered"],
         )
@@ -1497,7 +1499,7 @@ class DINOv3(_DINO):
         )
 
         # DINO global loss: compare post-head CLS tokens: student(global crops) vs. teacher(global crops)
-        dino_global_crops_loss = self.loss.dino(
+        dino_global_crops_loss = self.dino_loss(
             student_logits=student_global["cls_after_head"],
             teacher_probs=teacher_global["cls_centered"],
             ignore_diagonal=self.misc.global_ignore_diagonal,
@@ -1510,14 +1512,14 @@ class DINOv3(_DINO):
 
         # Koleo: regularize pre-head CLS tokens of student(global crops)
         koleo_loss = (
-            sum(self.loss.koleo(x) for x in student_global["cls_pre_head"])
+            sum(self.koleo_loss(x) for x in student_global["cls_pre_head"])
             / n_global_crops
         )
         loss_dict["koleo_loss"] = koleo_loss
         loss_accumulator += self.loss.koleo_loss_weight * koleo_scale * koleo_loss
 
         # IBOT loss
-        ibot_patch_loss = self.loss.ibot.forward_masked(
+        ibot_patch_loss = self.ibot_loss.forward_masked(
             student_global["masked_patch_after_head"],
             teacher_global["masked_patch_centered"],
             student_masks_flat=masks,
@@ -1529,7 +1531,7 @@ class DINOv3(_DINO):
 
         # Gram loss
         if self.gram.use_loss:
-            gram_loss = self.loss.gram(
+            gram_loss = self.gram_loss(
                 gram_global["student_patches"],
                 gram_global["teacher_patches"],
                 img_level=self.gram.img_level,
@@ -1547,13 +1549,13 @@ class DINOv3(_DINO):
             if self.gram.compute_stats:
                 with torch.no_grad():
                     # Save stats over masked / unmasked tokens
-                    gram_loss_masked = self.loss.gram(
+                    gram_loss_masked = self.gram_loss(
                         gram_global["orig_student_patches"][masks].detach(),
                         gram_global["orig_teacher_patches"][masks],
                         img_level=False,
                     )
                     loss_dict["stats_only/masked_gram_loss"] = gram_loss_masked
-                    gram_loss_unmasked = self.loss.gram(
+                    gram_loss_unmasked = self.gram_loss(
                         gram_global["orig_student_patches"][~masks].detach(),
                         gram_global["orig_teacher_patches"][~masks],
                         img_level=False,
