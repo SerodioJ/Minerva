@@ -130,7 +130,7 @@ class EvalCheckpointCallback(Callback):
             root = trainer.log_dir or trainer.default_root_dir
             ckpt_dir = Path(root) / "eval" / f"training_{step}" / self.name
             ckpt_dir.mkdir(parents=True, exist_ok=True)
-            model = getattr(pl_module, self.model_attr) 
+            model = getattr(pl_module, self.model_attr)
             state_dict = get_model_state_dict(model)
             dcp.save(state_dict=state_dict, checkpoint_id=str(ckpt_dir))
 
