@@ -723,7 +723,7 @@ class _DINO(_SSLTechnique):
             betas=(self.optim.adamw_beta1, self.optim.adamw_beta2),
         )
 
-    def technique_transforms(self):
+    def default_technique_transforms(self):
         return DataAugmentationDINO(
             self.crops.global_crops_scale,
             self.crops.local_crops_scale,
@@ -741,7 +741,7 @@ class _DINO(_SSLTechnique):
 
     def technique_callbacks(self, logs_dir: Path):
         custom_callbacks = [
-            AsyncEvalCheckpointCallback(period=self.iter_per_epoch * 10),
+            AsyncEvalCheckpointCallback(period=self.iter_per_epoch * 10, name="teacher_checkpoint"),
             ModelCheckpoint(
                 dirpath=logs_dir / "ckpt",
                 filename="{step}",
@@ -757,7 +757,7 @@ class _DINO(_SSLTechnique):
             custom_callbacks.insert(1, FilterWeights(filter_values="teacher"))
         return custom_callbacks
 
-    def technique_collate_fn(self):
+    def default_technique_collate_fn(self):
         img_size = self.crops.global_crops_size
         patch_size = int(
             self.student.backbone.patch_size

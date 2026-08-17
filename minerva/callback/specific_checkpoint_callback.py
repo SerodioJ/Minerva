@@ -118,9 +118,10 @@ class FilterWeights(Callback):
 
 
 class AsyncEvalCheckpointCallback(Callback):
-    def __init__(self, period: int):
+    def __init__(self, period: int, name: str):
         super().__init__()
         self.period = period
+        self.name = name
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         step = trainer.global_step
@@ -129,11 +130,11 @@ class AsyncEvalCheckpointCallback(Callback):
                 Path(trainer.log_dir)
                 / "eval"
                 / f"training_{step}"
-                / "teacher_checkpoint"
+                / self.name
             )
 
             state_dict = get_model_state_dict(pl_module.model_ema)
 
-            dcp.save(state_dict={"teacher": state_dict}, checkpoint_id=str(ckpt_dir))
+            dcp.save(state_dict=state_dict, checkpoint_id=str(ckpt_dir))
 
-            trainer.strategy.barrier("teacher_checkpoint_save")
+            trainer.strategy.barrier("async_checkpoint_save")
