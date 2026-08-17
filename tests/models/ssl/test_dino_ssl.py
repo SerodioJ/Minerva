@@ -1,6 +1,7 @@
 import pytest
 import torch
 import torch.nn as nn
+import numpy as np
 
 from minerva.models.nets.image.dino import DINOHead
 from minerva.models.nets.image.dino.v2_vit import DinoVisionTransformer as V2ViT
@@ -106,9 +107,10 @@ def test_linear_warmup_cosine_decay():
         warmup_iterations=10,
         total_iterations=100,
     )
-    assert schedule(0) == pytest.approx(0.0)
-    assert schedule(10) == pytest.approx(1.0)
-    assert schedule(100) == pytest.approx(0.1)
+    assert isinstance(schedule, np.ndarray)
+    assert schedule[0] == pytest.approx(0.0)
+    assert schedule[10] == pytest.approx(1.0)
+    assert schedule[-1] == pytest.approx(0.1)
 
 
 def test_cosine_scheduler():
@@ -125,14 +127,20 @@ def test_cosine_scheduler():
 
 
 def test_get_vit_lr_decay_rate():
-    decay_cls = get_vit_lr_decay_rate("cls_token", lr_decay_rate=0.8, num_layers=4)
-    assert decay_cls == pytest.approx(0.8**4)
+    decay_cls = get_vit_lr_decay_rate(
+        "backbone.cls_token", lr_decay_rate=0.8, num_layers=4
+    )
+    assert decay_cls == pytest.approx(0.8**5)
 
-    decay_blk0 = get_vit_lr_decay_rate("blocks.0.mlp", lr_decay_rate=0.8, num_layers=4)
-    assert decay_blk0 == pytest.approx(0.8**3)
+    decay_blk0 = get_vit_lr_decay_rate(
+        "backbone.blocks.0.mlp", lr_decay_rate=0.8, num_layers=4
+    )
+    assert decay_blk0 == pytest.approx(0.8**4)
 
-    decay_blk3 = get_vit_lr_decay_rate("blocks.3.mlp", lr_decay_rate=0.8, num_layers=4)
-    assert decay_blk3 == pytest.approx(0.8**0)
+    decay_blk3 = get_vit_lr_decay_rate(
+        "backbone.blocks.3.mlp", lr_decay_rate=0.8, num_layers=4
+    )
+    assert decay_blk3 == pytest.approx(0.8**1)
 
 
 def test_get_params_groups_with_decay(small_v2_backbone):
@@ -152,7 +160,16 @@ def test_remove_fsdp_compile_names():
 def test_apply_optim_scheduler():
     param = nn.Parameter(torch.randn(2, 2))
     optimizer = torch.optim.AdamW(
-        [{"params": [param], "lr": 1e-3, "weight_decay": 0.01, "is_last_layer": False}]
+        [
+            {
+                "params": [param],
+                "lr": 1e-3,
+                "weight_decay": 0.01,
+                "is_last_layer": False,
+                "lr_multiplier": 1.0,
+                "wd_multiplier": 1.0,
+            }
+        ]
     )
     apply_optim_scheduler(optimizer, lr=5e-4, wd=0.02, last_layer_lr=1e-3)
     assert optimizer.param_groups[0]["lr"] == 5e-4
@@ -169,7 +186,7 @@ def test_collate_data_and_cast():
             "offsets": [],
         }
 
-    samples = [make_sample(), make_sample()]
+    samples = [(make_sample(), 0), (make_sample(), 0)]
     mask_gen = MaskingGenerator(input_size=(2, 2))
 
     collated = collate_data_and_cast(
@@ -242,7 +259,7 @@ def test_dinov2_optimizer_and_transforms(small_v2_backbone, small_dino_head):
     assert callable(collate_fn)
 
 
-def test_dinov2_loss_step(small_v2_backbone, small_dino_head):
+def test_dinov2_forward(small_v2_backbone, small_dino_head):
     model = DINOv2(
         backbone=small_v2_backbone,
         learning_rate=1e-3,
@@ -255,9 +272,9 @@ def test_dinov2_loss_step(small_v2_backbone, small_dino_head):
             "local_crops_size": 16,
             "local_crops_number": 2,
         },
+        misc={"param_dtype": "fp32"},
     )
-    model.dino_loss.init_weights()
-    model.ibot_loss.init_weights()
+    model.init_weights()
 
     collate_fn = model.default_technique_collate_fn()
     sample = {
@@ -266,11 +283,12 @@ def test_dinov2_loss_step(small_v2_backbone, small_dino_head):
         "local_crops": [torch.randn(3, 16, 16), torch.randn(3, 16, 16)],
         "offsets": [],
     }
-    batch = collate_fn([sample, sample])
+    batch = collate_fn([(sample, 0), (sample, 0)])
 
-    loss = model._loss_step(batch)
+    loss, loss_dict = model.forward(batch, teacher_temp=0.07)
     assert isinstance(loss, torch.Tensor)
     assert torch.isfinite(loss)
+    assert isinstance(loss_dict, dict)
 
 
 # -------------------------------------------------------------
@@ -329,9 +347,9 @@ def test_dinov3_forward(small_v3_backbone, small_dino_head_v3):
             "local_crops_size": 16,
             "local_crops_number": 2,
         },
+        misc={"param_dtype": "fp32"},
     )
-    model.dino_loss.init_weights()
-    model.ibot_loss.init_weights()
+    model.init_weights()
 
     collate_fn = model.default_technique_collate_fn()
     sample = {
@@ -340,7 +358,7 @@ def test_dinov3_forward(small_v3_backbone, small_dino_head_v3):
         "local_crops": [torch.randn(3, 16, 16), torch.randn(3, 16, 16)],
         "offsets": [],
     }
-    batch = collate_fn([sample, sample])
+    batch = collate_fn([(sample, 0), (sample, 0)])
 
     loss, metrics = model.forward(batch, teacher_temp=0.07, iteration=0)
     assert isinstance(loss, torch.Tensor)

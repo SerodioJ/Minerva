@@ -1216,13 +1216,14 @@ class DINOv3(_DINO):
         )
         with torch.no_grad():
             student_variance = torch.var(student_global["cls_after_head"], dim=0).mean()
-            self.log(
-                "student_feature_variance",
-                student_variance.item(),
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-            )
+            if self._trainer is not None:
+                self.log(
+                    "student_feature_variance",
+                    student_variance.item(),
+                    on_step=True,
+                    on_epoch=False,
+                    prog_bar=False,
+                )
 
         # Gram output
         if self.gram.use_loss:
