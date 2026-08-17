@@ -30,7 +30,10 @@ from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
 from torch.distributed._composable.fsdp import fully_shard
 import numpy as np
 
-from minerva.models.nets.image.dino import get_activation_checkpoint_wrapper, wrap_compile_block
+from minerva.models.nets.image.dino import (
+    get_activation_checkpoint_wrapper,
+    wrap_compile_block,
+)
 
 
 def init_weights_vit(module: nn.Module, name: str = ""):
@@ -41,7 +44,7 @@ def init_weights_vit(module: nn.Module, name: str = ""):
         if hasattr(module, "bias_mask") and module.bias_mask is not None:
             o = module.out_features
             module.bias_mask.fill_(1)
-            module.bias_mask[o // 3: 2 * o // 3].fill_(0)
+            module.bias_mask[o // 3 : 2 * o // 3].fill_(0)
     if isinstance(module, nn.LayerNorm):
         module.reset_parameters()
     if isinstance(module, LayerScale):
@@ -93,7 +96,9 @@ class DinoVisionTransformer(nn.Module):
 
         norm_layer_cls = norm_layer_dict[norm_layer]
 
-        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
+        self.num_features = self.embed_dim = (
+            embed_dim  # num_features for consistency with other models
+        )
         self.n_blocks = depth
         self.num_heads = num_heads
         self.patch_size = patch_size
@@ -109,7 +114,9 @@ class DinoVisionTransformer(nn.Module):
         self.cls_token = nn.Parameter(torch.empty(1, 1, embed_dim, device=device))
         self.n_storage_tokens = n_storage_tokens
         if self.n_storage_tokens > 0:
-            self.storage_tokens = nn.Parameter(torch.empty(1, n_storage_tokens, embed_dim, device=device))
+            self.storage_tokens = nn.Parameter(
+                torch.empty(1, n_storage_tokens, embed_dim, device=device)
+            )
         # logger.info(f"using base={pos_embed_rope_base} for rope new")
         # logger.info(f"using min_period={pos_embed_rope_min_period} for rope new")
         # logger.info(f"using max_period={pos_embed_rope_max_period} for rope new")
@@ -188,14 +195,17 @@ class DinoVisionTransformer(nn.Module):
             ckpt = torch.load(self.start_from, weights_only=True)
             self.load_state_dict(ckpt)
 
-
-    def prepare_tokens_with_masks(self, x: Tensor, masks=None) -> Tuple[Tensor, Tuple[int]]:
+    def prepare_tokens_with_masks(
+        self, x: Tensor, masks=None
+    ) -> Tuple[Tensor, Tuple[int]]:
         x = self.patch_embed(x)
         B, H, W, _ = x.shape
         x = x.flatten(1, 2)
 
         if masks is not None:
-            x = torch.where(masks.unsqueeze(-1), self.mask_token.to(x.dtype).unsqueeze(0), x)
+            x = torch.where(
+                masks.unsqueeze(-1), self.mask_token.to(x.dtype).unsqueeze(0), x
+            )
             cls_token = self.cls_token
         else:
             cls_token = self.cls_token + 0 * self.mask_token
@@ -221,7 +231,9 @@ class DinoVisionTransformer(nn.Module):
 
         return x, (H, W)
 
-    def forward_features_list(self, x_list: List[Tensor], masks_list: List[Tensor]) -> List[Dict[str, Tensor]]:
+    def forward_features_list(
+        self, x_list: List[Tensor], masks_list: List[Tensor]
+    ) -> List[Dict[str, Tensor]]:
         x = []
         rope = []
         for t_x, t_masks in zip(x_list, masks_list):
@@ -241,16 +253,18 @@ class DinoVisionTransformer(nn.Module):
                 if self.untie_global_and_local_cls_norm and self.training and idx == 1:
                     # Assume second entry of list corresponds to local crops.
                     # We only ever apply this during training.
-                    x_norm_cls_reg = self.local_cls_norm(x[:, : self.n_storage_tokens + 1])
+                    x_norm_cls_reg = self.local_cls_norm(
+                        x[:, : self.n_storage_tokens + 1]
+                    )
                 elif self.untie_cls_and_patch_norms:
                     x_norm_cls_reg = self.cls_norm(x[:, : self.n_storage_tokens + 1])
                 else:
                     x_norm_cls_reg = self.norm(x[:, : self.n_storage_tokens + 1])
-                x_norm_patch = self.norm(x[:, self.n_storage_tokens + 1:])
+                x_norm_patch = self.norm(x[:, self.n_storage_tokens + 1 :])
             else:
                 x_norm = self.norm(x)
                 x_norm_cls_reg = x_norm[:, : self.n_storage_tokens + 1]
-                x_norm_patch = x_norm[:, self.n_storage_tokens + 1:]
+                x_norm_patch = x_norm[:, self.n_storage_tokens + 1 :]
             output.append(
                 {
                     "x_norm_clstoken": x_norm_cls_reg[:, 0],
@@ -262,17 +276,23 @@ class DinoVisionTransformer(nn.Module):
             )
         return output
 
-    def forward_features(self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None) -> List[Dict[str, Tensor]]:
+    def forward_features(
+        self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None
+    ) -> List[Dict[str, Tensor]]:
         if isinstance(x, torch.Tensor):
             return self.forward_features_list([x], [masks])[0]
         else:
             return self.forward_features_list(x, masks)
 
-    def _get_intermediate_layers_not_chunked(self, x: Tensor, n: int = 1) -> List[Tensor]:
+    def _get_intermediate_layers_not_chunked(
+        self, x: Tensor, n: int = 1
+    ) -> List[Tensor]:
         x, (H, W) = self.prepare_tokens_with_masks(x)
         # If n is an int, take the n last blocks. If it's a list, take them
         output, total_block_len = [], len(self.blocks)
-        blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
+        blocks_to_take = (
+            range(total_block_len - n, total_block_len) if isinstance(n, int) else n
+        )
         for i, blk in enumerate(self.blocks):
             if self.rope_embed is not None:
                 rope_sincos = self.rope_embed(H=H, W=W)
@@ -281,7 +301,9 @@ class DinoVisionTransformer(nn.Module):
             x = blk(x, rope_sincos)
             if i in blocks_to_take:
                 output.append(x)
-        assert len(output) == len(blocks_to_take), f"only {len(output)} / {len(blocks_to_take)} blocks found"
+        assert len(output) == len(
+            blocks_to_take
+        ), f"only {len(output)} / {len(blocks_to_take)} blocks found"
         return output
 
     def get_intermediate_layers(
@@ -300,18 +322,22 @@ class DinoVisionTransformer(nn.Module):
             for out in outputs:
                 if self.untie_cls_and_patch_norms:
                     x_norm_cls_reg = self.cls_norm(out[:, : self.n_storage_tokens + 1])
-                    x_norm_patch = self.norm(out[:, self.n_storage_tokens + 1:])
-                    outputs_normed.append(torch.cat((x_norm_cls_reg, x_norm_patch), dim=1))
+                    x_norm_patch = self.norm(out[:, self.n_storage_tokens + 1 :])
+                    outputs_normed.append(
+                        torch.cat((x_norm_cls_reg, x_norm_patch), dim=1)
+                    )
                 else:
                     outputs_normed.append(self.norm(out))
             outputs = outputs_normed
         class_tokens = [out[:, 0] for out in outputs]
-        extra_tokens = [out[:, 1: self.n_storage_tokens + 1] for out in outputs]
-        outputs = [out[:, self.n_storage_tokens + 1:] for out in outputs]
+        extra_tokens = [out[:, 1 : self.n_storage_tokens + 1] for out in outputs]
+        outputs = [out[:, self.n_storage_tokens + 1 :] for out in outputs]
         if reshape:
             B, _, h, w = x.shape
             outputs = [
-                out.reshape(B, h // self.patch_size, w // self.patch_size, -1).permute(0, 3, 1, 2).contiguous()
+                out.reshape(B, h // self.patch_size, w // self.patch_size, -1)
+                .permute(0, 3, 1, 2)
+                .contiguous()
                 for out in outputs
             ]
         if not return_class_token and not return_extra_tokens:
@@ -323,7 +349,9 @@ class DinoVisionTransformer(nn.Module):
         elif return_class_token and return_extra_tokens:
             return tuple(zip(outputs, class_tokens, extra_tokens))
 
-    def forward(self, *args, is_training: bool = False, **kwargs) -> List[Dict[str, Tensor]] | Tensor:
+    def forward(
+        self, *args, is_training: bool = False, **kwargs
+    ) -> List[Dict[str, Tensor]] | Tensor:
         ret = self.forward_features(*args, **kwargs)
         if is_training:
             return ret
@@ -338,7 +366,9 @@ class DinoVisionTransformer(nn.Module):
     def compile(self, use_cuda_graphs: bool = False):
         assert isinstance(self.blocks, nn.ModuleList)
         for block_id, block in enumerate(self.blocks):
-            self.blocks[block_id] = wrap_compile_block(block, use_cuda_graphs, is_backbone_block=True)
+            self.blocks[block_id] = wrap_compile_block(
+                block, use_cuda_graphs, is_backbone_block=True
+            )
 
     def fsdp(self, fsdp_config: Dict[str, Any]):
         # Backbone - FSDP every block
@@ -346,7 +376,9 @@ class DinoVisionTransformer(nn.Module):
         assert isinstance(blocks, nn.ModuleList)
         for block_id, block in enumerate(blocks):
             block_reshard: int | bool = True
-            blocks[block_id] = fully_shard(block, **fsdp_config, reshard_after_forward=block_reshard)
+            blocks[block_id] = fully_shard(
+                block, **fsdp_config, reshard_after_forward=block_reshard
+            )
         prev_block: FSDPState
         next_block: FSDPState
         for prev_block, next_block in zip(blocks, blocks[1:]):
@@ -356,13 +388,12 @@ class DinoVisionTransformer(nn.Module):
         register_fsdp_forward_method(self, "get_intermediate_layers")
 
 
-
-
 def vit_small(patch_size=16, **kwargs):
+    depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=384,
-        depth=12,
+        depth=depth,
         num_heads=6,
         ffn_ratio=4,
         **kwargs,
@@ -371,10 +402,11 @@ def vit_small(patch_size=16, **kwargs):
 
 
 def vit_base(patch_size=16, **kwargs):
+    depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=768,
-        depth=12,
+        depth=depth,
         num_heads=12,
         ffn_ratio=4,
         **kwargs,
@@ -383,10 +415,11 @@ def vit_base(patch_size=16, **kwargs):
 
 
 def vit_large(patch_size=16, **kwargs):
+    depth = kwargs.pop("depth", 24)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=1024,
-        depth=24,
+        depth=depth,
         num_heads=16,
         ffn_ratio=4,
         **kwargs,
@@ -395,10 +428,11 @@ def vit_large(patch_size=16, **kwargs):
 
 
 def vit_so400m(patch_size=16, **kwargs):
+    depth = kwargs.pop("depth", 27)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=1152,
-        depth=27,
+        depth=depth,
         num_heads=18,
         ffn_ratio=3.777777778,
         **kwargs,
@@ -407,10 +441,11 @@ def vit_so400m(patch_size=16, **kwargs):
 
 
 def vit_huge2(patch_size=16, **kwargs):
+    depth = kwargs.pop("depth", 32)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=1280,
-        depth=32,
+        depth=depth,
         num_heads=20,
         ffn_ratio=4,
         **kwargs,
@@ -422,10 +457,11 @@ def vit_giant2(patch_size=16, **kwargs):
     """
     Close to ViT-giant, with embed-dim 1536 and 24 heads => embed-dim per head 64
     """
+    depth = kwargs.pop("depth", 40)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=1536,
-        depth=40,
+        depth=depth,
         num_heads=24,
         ffn_ratio=4,
         **kwargs,
@@ -434,10 +470,11 @@ def vit_giant2(patch_size=16, **kwargs):
 
 
 def vit_7b(patch_size=16, **kwargs):
+    depth = kwargs.pop("depth", 40)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=4096,
-        depth=40,
+        depth=depth,
         num_heads=32,
         ffn_ratio=3,
         **kwargs,
@@ -453,10 +490,16 @@ def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int]], Lis
     return flattened, shapes, num_tokens
 
 
-def uncat_with_shapes(flattened: Tensor, shapes: List[Tuple[int]], num_tokens: List[int]) -> List[Tensor]:
+def uncat_with_shapes(
+    flattened: Tensor, shapes: List[Tuple[int]], num_tokens: List[int]
+) -> List[Tensor]:
     outputs_splitted = torch.split_with_sizes(flattened, num_tokens, dim=0)
-    shapes_adjusted = [shape[:-1] + torch.Size([flattened.shape[-1]]) for shape in shapes]
-    outputs_reshaped = [o.reshape(shape) for o, shape in zip(outputs_splitted, shapes_adjusted)]
+    shapes_adjusted = [
+        shape[:-1] + torch.Size([flattened.shape[-1]]) for shape in shapes
+    ]
+    outputs_reshaped = [
+        o.reshape(shape) for o, shape in zip(outputs_splitted, shapes_adjusted)
+    ]
     return outputs_reshaped
 
 
@@ -564,9 +607,15 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         hidden_features = hidden_features or in_features
         d = int(hidden_features * 2 / 3)
         swiglu_hidden_features = d + (-d % align_to)
-        self.w1 = nn.Linear(in_features, swiglu_hidden_features, bias=bias, device=device)
-        self.w2 = nn.Linear(in_features, swiglu_hidden_features, bias=bias, device=device)
-        self.w3 = nn.Linear(swiglu_hidden_features, out_features, bias=bias, device=device)
+        self.w1 = nn.Linear(
+            in_features, swiglu_hidden_features, bias=bias, device=device
+        )
+        self.w2 = nn.Linear(
+            in_features, swiglu_hidden_features, bias=bias, device=device
+        )
+        self.w3 = nn.Linear(
+            swiglu_hidden_features, out_features, bias=bias, device=device
+        )
 
     def forward(self, x: Tensor) -> Tensor:
         x1 = self.w1(x)
@@ -597,10 +646,16 @@ class LinearKMaskedBias(nn.Linear):
         o = self.out_features
         assert o % 3 == 0
         if self.bias is not None:
-            self.register_buffer("bias_mask", torch.full_like(self.bias, fill_value=math.nan))
+            self.register_buffer(
+                "bias_mask", torch.full_like(self.bias, fill_value=math.nan)
+            )
 
     def forward(self, input: Tensor) -> Tensor:
-        masked_bias = self.bias * self.bias_mask.to(self.bias.dtype) if self.bias is not None else None
+        masked_bias = (
+            self.bias * self.bias_mask.to(self.bias.dtype)
+            if self.bias is not None
+            else None
+        )
         return F.linear(input, self.weight, masked_bias)
 
 
@@ -627,7 +682,9 @@ class SelfAttention(nn.Module):
         self.proj = nn.Linear(dim, dim, bias=proj_bias, device=device)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
+    def apply_rope(
+        self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]
+    ) -> Tuple[Tensor, Tensor]:
         # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
         q_dtype = q.dtype
         k_dtype = k.dtype
@@ -704,7 +761,10 @@ class CausalSelfAttention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def init_weights(
-        self, init_attn_std: float | None = None, init_proj_std: float | None = None, factor: float = 1.0
+        self,
+        init_attn_std: float | None = None,
+        init_proj_std: float | None = None,
+        factor: float = 1.0,
     ) -> None:
         init_attn_std = init_attn_std or (self.dim**-0.5)
         init_proj_std = init_proj_std or init_attn_std * factor
@@ -721,7 +781,12 @@ class CausalSelfAttention(nn.Module):
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
         x = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=self.attn_drop if self.training else 0, is_causal=is_causal
+            q,
+            k,
+            v,
+            attn_mask=None,
+            dropout_p=self.attn_drop if self.training else 0,
+            is_causal=is_causal,
         )
         x = x.transpose(1, 2).contiguous().view(B, N, C)
         x = self.proj_drop(self.proj(x))
@@ -767,7 +832,11 @@ class SelfAttentionBlock(nn.Module):
             mask_k_bias=mask_k_bias,
             device=device,
         )
-        self.ls1 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
+        self.ls1 = (
+            LayerScale(dim, init_values=init_values, device=device)
+            if init_values
+            else nn.Identity()
+        )
 
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * ffn_ratio)
@@ -779,12 +848,18 @@ class SelfAttentionBlock(nn.Module):
             bias=ffn_bias,
             device=device,
         )
-        self.ls2 = LayerScale(dim, init_values=init_values, device=device) if init_values else nn.Identity()
+        self.ls2 = (
+            LayerScale(dim, init_values=init_values, device=device)
+            if init_values
+            else nn.Identity()
+        )
 
         self.sample_drop_ratio = drop_path
 
     @staticmethod
-    def _maybe_index_rope(rope: tuple[Tensor, Tensor] | None, indices: Tensor) -> tuple[Tensor, Tensor] | None:
+    def _maybe_index_rope(
+        rope: tuple[Tensor, Tensor] | None, indices: Tensor
+    ) -> tuple[Tensor, Tensor] | None:
         if rope is None:
             return None
 
@@ -846,19 +921,27 @@ class SelfAttentionBlock(nn.Module):
         related to concat ops.
         """
         b_list = [x.shape[0] for x in x_list]
-        sample_subset_sizes = [max(int(b * (1 - self.sample_drop_ratio)), 1) for b in b_list]
-        residual_scale_factors = [b / sample_subset_size for b, sample_subset_size in zip(b_list, sample_subset_sizes)]
+        sample_subset_sizes = [
+            max(int(b * (1 - self.sample_drop_ratio)), 1) for b in b_list
+        ]
+        residual_scale_factors = [
+            b / sample_subset_size
+            for b, sample_subset_size in zip(b_list, sample_subset_sizes)
+        ]
 
         if self.training and self.sample_drop_ratio > 0.0:
             indices_1_list = [
                 (torch.randperm(b, device=x.device))[:sample_subset_size]
                 for x, b, sample_subset_size in zip(x_list, b_list, sample_subset_sizes)
             ]
-            x_subset_1_list = [x[indices_1] for x, indices_1 in zip(x_list, indices_1_list)]
+            x_subset_1_list = [
+                x[indices_1] for x, indices_1 in zip(x_list, indices_1_list)
+            ]
 
             if rope_list is not None:
                 rope_subset_list = [
-                    self._maybe_index_rope(rope, indices_1) for rope, indices_1 in zip(rope_list, indices_1_list)
+                    self._maybe_index_rope(rope, indices_1)
+                    for rope, indices_1 in zip(rope_list, indices_1_list)
                 ]
             else:
                 rope_subset_list = rope_list
@@ -884,7 +967,9 @@ class SelfAttentionBlock(nn.Module):
                 (torch.randperm(b, device=x.device))[:sample_subset_size]
                 for x, b, sample_subset_size in zip(x_list, b_list, sample_subset_sizes)
             ]
-            x_subset_2_list = [x[indices_2] for x, indices_2 in zip(x_attn_list, indices_2_list)]
+            x_subset_2_list = [
+                x[indices_2] for x, indices_2 in zip(x_attn_list, indices_2_list)
+            ]
             flattened, shapes, num_tokens = cat_keep_shapes(x_subset_2_list)
             norm2_flat = self.norm2(flattened)
             norm2_list = uncat_with_shapes(norm2_flat, shapes, num_tokens)
@@ -944,9 +1029,15 @@ class CausalSelfAttentionBlock(nn.Module):
 
         self.dim = dim
         self.is_causal = is_causal
-        self.ls1 = LayerScale(dim, init_values=ls_init_value) if ls_init_value else nn.Identity()
+        self.ls1 = (
+            LayerScale(dim, init_values=ls_init_value)
+            if ls_init_value
+            else nn.Identity()
+        )
         self.attention_norm = norm_layer(dim)
-        self.attention = CausalSelfAttention(dim, num_heads, attn_drop=dropout_prob, proj_drop=dropout_prob)
+        self.attention = CausalSelfAttention(
+            dim, num_heads, attn_drop=dropout_prob, proj_drop=dropout_prob
+        )
 
         self.ffn_norm = norm_layer(dim)
         ffn_hidden_dim = int(dim * ffn_ratio)
@@ -957,7 +1048,11 @@ class CausalSelfAttentionBlock(nn.Module):
             act_layer=act_layer,
         )
 
-        self.ls2 = LayerScale(dim, init_values=ls_init_value) if ls_init_value else nn.Identity()
+        self.ls2 = (
+            LayerScale(dim, init_values=ls_init_value)
+            if ls_init_value
+            else nn.Identity()
+        )
 
     def init_weights(
         self,
@@ -1071,7 +1166,9 @@ class Fp8LinearKMaskedBias(LinearKMaskedBias):
         return out
 
 
-def convert_linears_to_fp8(root_module: torch.nn.Module, *, filter: str) -> torch.nn.Module:
+def convert_linears_to_fp8(
+    root_module: torch.nn.Module, *, filter: str
+) -> torch.nn.Module:
     filter_re = re.compile(filter)
     total_count = 0
 
@@ -1092,7 +1189,8 @@ def convert_linears_to_fp8(root_module: torch.nn.Module, *, filter: str) -> torc
             # switch back to cuBLAS, it artificially requires dims to be
             # multiples of 16.
             raise RuntimeError(
-                "fp8 requires all dimensions to be multiples of 64 " "(consider using ffn_layer=swiglu64 or higher)"
+                "fp8 requires all dimensions to be multiples of 64 "
+                "(consider using ffn_layer=swiglu64 or higher)"
             )
         new_module = new_cls(
             in_features=module.in_features,
@@ -1189,7 +1287,9 @@ class PatchEmbed(nn.Module):
 
         self.flatten_embedding = flatten_embedding
 
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_HW, stride=patch_HW)
+        self.proj = nn.Conv2d(
+            in_chans, embed_dim, kernel_size=patch_HW, stride=patch_HW
+        )
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
@@ -1208,7 +1308,13 @@ class PatchEmbed(nn.Module):
 
     def flops(self) -> float:
         Ho, Wo = self.patches_resolution
-        flops = Ho * Wo * self.embed_dim * self.in_chans * (self.patch_size[0] * self.patch_size[1])
+        flops = (
+            Ho
+            * Wo
+            * self.embed_dim
+            * self.in_chans
+            * (self.patch_size[0] * self.patch_size[1])
+        )
         if self.norm is not None:
             flops += Ho * Wo * self.embed_dim
         return flops
@@ -1221,6 +1327,7 @@ class PatchEmbed(nn.Module):
 
 
 # layers.rms_norm
+
 
 class RMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-5):
@@ -1240,6 +1347,7 @@ class RMSNorm(nn.Module):
 
 
 # layers.rope_position_encoding
+
 
 # RoPE positional embedding with no mixing of coordinates (axial) and no learnable weights
 # Supports two parametrizations of the rope parameters: either using `base` or `min_period` and `max_period`.
@@ -1263,7 +1371,9 @@ class RopePositionEmbedding(nn.Module):
         assert embed_dim % (4 * num_heads) == 0
         both_periods = min_period is not None and max_period is not None
         if (base is None and not both_periods) or (base is not None and both_periods):
-            raise ValueError("Either `base` or `min_period`+`max_period` must be provided.")
+            raise ValueError(
+                "Either `base` or `min_period`+`max_period` must be provided."
+            )
 
         D_head = embed_dim // num_heads
         self.base = base
@@ -1303,13 +1413,17 @@ class RopePositionEmbedding(nn.Module):
             coords_w = torch.arange(0.5, W, **dd) / W  # [W]
         else:
             raise ValueError(f"Unknown normalize_coords: {self.normalize_coords}")
-        coords = torch.stack(torch.meshgrid(coords_h, coords_w, indexing="ij"), dim=-1)  # [H, W, 2]
+        coords = torch.stack(
+            torch.meshgrid(coords_h, coords_w, indexing="ij"), dim=-1
+        )  # [H, W, 2]
         coords = coords.flatten(0, 1)  # [HW, 2]
         coords = 2.0 * coords - 1.0  # Shift range [0, 1] to [-1, +1]
 
         # Shift coords by adding a uniform value in [-shift, shift]
         if self.training and self.shift_coords is not None:
-            shift_hw = torch.empty(2, **dd).uniform_(-self.shift_coords, self.shift_coords)
+            shift_hw = torch.empty(2, **dd).uniform_(
+                -self.shift_coords, self.shift_coords
+            )
             coords += shift_hw[None, :]
 
         # Jitter coords by multiplying the range [-1, 1] by a log-uniform value in [1/jitter, jitter]
@@ -1327,7 +1441,9 @@ class RopePositionEmbedding(nn.Module):
             coords *= rescale_hw
 
         # Prepare angles and sin/cos
-        angles = 2 * math.pi * coords[:, :, None] / self.periods[None, None, :]  # [HW, 2, D//4]
+        angles = (
+            2 * math.pi * coords[:, :, None] / self.periods[None, None, :]
+        )  # [HW, 2, D//4]
         angles = angles.flatten(1, 2)  # [HW, D//2]
         angles = angles.tile(2)  # [HW, D]
         cos = torch.cos(angles)  # [HW, D]
@@ -1340,11 +1456,15 @@ class RopePositionEmbedding(nn.Module):
         dtype = self.dtype
         if self.base is not None:
             periods = self.base ** (
-                2 * torch.arange(self.D_head // 4, device=device, dtype=dtype) / (self.D_head // 2)
+                2
+                * torch.arange(self.D_head // 4, device=device, dtype=dtype)
+                / (self.D_head // 2)
             )  # [D//4]
         else:
             base = self.max_period / self.min_period
-            exponents = torch.linspace(0, 1, self.D_head // 4, device=device, dtype=dtype)  # [D//4] range [0, 1]
+            exponents = torch.linspace(
+                0, 1, self.D_head // 4, device=device, dtype=dtype
+            )  # [D//4] range [0, 1]
             periods = base**exponents  # range [1, max_period / min_period]
             periods = periods / base  # range [min_period / max_period, 1]
             periods = periods * self.max_period  # range [min_period, max_period]

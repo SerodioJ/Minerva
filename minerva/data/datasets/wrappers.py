@@ -6,7 +6,11 @@ from torch.utils.data import Dataset
 
 
 class SSLDatasetWrapper(wrapt.ObjectProxy):
-    def __init__(self, dataset: Union[Dataset, SimpleDataset], technique_transforms: Optional[Callable]) -> None:
+    def __init__(
+        self,
+        dataset: Union[Dataset, SimpleDataset],
+        technique_transforms: Optional[Callable],
+    ) -> None:
         super().__init__(dataset)
         self.__wrapped__ = dataset
         self.__transforms__ = technique_transforms
@@ -15,10 +19,10 @@ class SSLDatasetWrapper(wrapt.ObjectProxy):
         item = self.__wrapped__[idx]
 
         if self.__transforms__ is not None:
-            aux = [
-                i for i in item
-            ]
-            aux[0] = self.__transforms__(aux[0])  # TODO check techniques that need to apply transform in more then one item
+            aux = [i for i in item]
+            aux[0] = self.__transforms__(
+                aux[0]
+            )  # TODO check techniques that need to apply transform in more then one item
             item = tuple(aux)
 
         return item

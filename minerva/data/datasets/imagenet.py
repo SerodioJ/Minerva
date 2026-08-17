@@ -35,7 +35,9 @@ class _Split(Enum):
     def get_dirname(self, class_id: Optional[str] = None) -> str:
         return self.value if class_id is None else os.path.join(self.value, class_id)
 
-    def get_image_relpath(self, actual_index: int, class_id: Optional[str] = None) -> str:
+    def get_image_relpath(
+        self, actual_index: int, class_id: Optional[str] = None
+    ) -> str:
         if self == _Split.TRAIN:
             dirname = self.get_dirname(class_id)
             basename = f"{class_id}_{actual_index}"
@@ -68,12 +70,9 @@ class ImageNet(SimpleDataset):
         super().__init__(
             readers=[
                 _ImageNetDataReader(root, extra, split),
-                _ImageNetTargetReader(root, extra, split)
+                _ImageNetTargetReader(root, extra, split),
             ],
-            transforms=[
-                transform,
-                target_transform
-            ],
+            transforms=[transform, target_transform],
         )
         self.root = root
         self.extra = extra
@@ -81,12 +80,7 @@ class ImageNet(SimpleDataset):
 
 
 class _ImageNetBaseReader(_Reader):
-    def __init__(
-            self,
-            root: str,
-            extra: str,
-            split: "ImageNet.Split"
-    ):
+    def __init__(self, root: str, extra: str, split: "ImageNet.Split"):
         self.root = root
         self._extra_root = extra
         self._split = split

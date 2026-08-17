@@ -741,7 +741,9 @@ class _DINO(_SSLTechnique):
 
     def technique_callbacks(self, logs_dir: Path):
         custom_callbacks = [
-            AsyncEvalCheckpointCallback(period=self.iter_per_epoch * 10, name="teacher_checkpoint"),
+            AsyncEvalCheckpointCallback(
+                period=self.iter_per_epoch * 10, name="teacher_checkpoint"
+            ),
             ModelCheckpoint(
                 dirpath=logs_dir / "ckpt",
                 filename="{step}",

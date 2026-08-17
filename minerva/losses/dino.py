@@ -117,7 +117,10 @@ class SinkhornKnoppTeacher(nn.Module):
         ).t()  # Q is K-by-B for consistency with notations from our paper
         # B = Q.shape[1] * world_size # number of samples to assign
         B = n_masked_patches_tensor
-        torch_dist.all_reduce(B, group=None)  # TODO change to local reduce if necessary
+        if torch_dist.is_initialized():
+            torch_dist.all_reduce(
+                B, group=None
+            )  # TODO change to local reduce if necessary
         K = Q.shape[0]  # how many prototypes
 
         # make the matrix sums to 1
@@ -311,7 +314,7 @@ class KoLeoLossDistributed(nn.Module):
                 student_output, eps=eps, p=2, dim=-1
             )  # local_B x D
 
-            if torch_dist.is_enabled():
+            if torch_dist.is_initialized():
                 all_student_outputs = torch.cat(
                     torch_dist.nn.all_gather(student_output), dim=0
                 )  # global_B x D

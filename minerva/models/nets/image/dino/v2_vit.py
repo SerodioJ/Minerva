@@ -98,10 +98,11 @@ def init_weights_vit_timm(module: nn.Module, name: str = ""):
 
 
 def vit_small(patch_size=16, num_register_tokens=0, **kwargs):
+    depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=384,
-        depth=12,
+        depth=depth,
         num_heads=6,
         ffn_ratio=4,
         block_fn=partial(Block, attn_class=MemEffAttention),
@@ -112,10 +113,11 @@ def vit_small(patch_size=16, num_register_tokens=0, **kwargs):
 
 
 def vit_base(patch_size=16, num_register_tokens=0, **kwargs):
+    depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=768,
-        depth=12,
+        depth=depth,
         num_heads=12,
         ffn_ratio=4,
         block_fn=partial(Block, attn_class=MemEffAttention),
@@ -126,10 +128,11 @@ def vit_base(patch_size=16, num_register_tokens=0, **kwargs):
 
 
 def vit_large(patch_size=16, num_register_tokens=0, **kwargs):
+    depth = kwargs.pop("depth", 24)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=1024,
-        depth=24,
+        depth=depth,
         num_heads=16,
         ffn_ratio=4,
         block_fn=partial(Block, attn_class=MemEffAttention),
@@ -143,10 +146,11 @@ def vit_giant2(patch_size=16, num_register_tokens=0, **kwargs):
     """
     Close to ViT-giant, with embed-dim 1536 and 24 heads => embed-dim per head 64
     """
+    depth = kwargs.pop("depth", 40)
     model = DinoVisionTransformer(
         patch_size=patch_size,
         embed_dim=1536,
-        depth=40,
+        depth=depth,
         num_heads=24,
         ffn_ratio=4,
         block_fn=partial(Block, attn_class=MemEffAttention),

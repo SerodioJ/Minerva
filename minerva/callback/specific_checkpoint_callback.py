@@ -126,12 +126,7 @@ class AsyncEvalCheckpointCallback(Callback):
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         step = trainer.global_step
         if self.period > 0 and (step + 1) % self.period == 0:
-            ckpt_dir = (
-                Path(trainer.log_dir)
-                / "eval"
-                / f"training_{step}"
-                / self.name
-            )
+            ckpt_dir = Path(trainer.log_dir) / "eval" / f"training_{step}" / self.name
 
             state_dict = get_model_state_dict(pl_module.model_ema)
 

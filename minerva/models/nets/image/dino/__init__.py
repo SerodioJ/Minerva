@@ -53,7 +53,6 @@ class DINOHead(nn.Module):
         self.apply(self._init_weights)
         if hasattr(self, "weight_g"):
             self.weight_g.data.fill_(1.0)
-        
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):

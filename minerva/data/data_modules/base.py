@@ -187,9 +187,11 @@ class MinervaDataModule(LightningDataModule):
                 shuffle=kwargs.get("shuffle"),
                 rank=global_rank,
                 world_size=world_size,
-                advance=self.trainer.global_step if self.trainer else 0
+                advance=self.trainer.global_step if self.trainer else 0,
             )
-            kwargs["shuffle"] = False  # avoids override with Torch's default RandomSampler
+            kwargs["shuffle"] = (
+                False  # avoids override with Torch's default RandomSampler
+            )
             kwargs["sampler"] = sampler
         return kwargs
 
