@@ -56,10 +56,11 @@ class _SSLTechnique(LightningModule):
 
     # Method to enable per epoch dataset seed
     def on_train_epoch_start(self):
+        dataset = None
         if hasattr(self.trainer.datamodule, "train_dataset"):
             dataset = self.trainer.datamodule.train_dataset
         elif hasattr(self.trainer.datamodule, "dataset"):
             dataset = self.trainer.datamodule.dataset
 
-        if hasattr(dataset, "set_epoch"):
+        if dataset is not None and hasattr(dataset, "set_epoch"):
             dataset.set_epoch(self.current_epoch)

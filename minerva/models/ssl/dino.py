@@ -51,7 +51,7 @@ from minerva.losses.dino import (
     DINOLoss,
 )
 from minerva.callback.specific_checkpoint_callback import (
-    AsyncEvalCheckpointCallback,
+    EvalCheckpointCallback,
     FilterWeights,
 )
 from minerva.transforms.dino import DataAugmentationDINO, MaskingGenerator
@@ -648,7 +648,7 @@ class _DINO(_SSLTechnique):
         self.ibot_loss.init_weights()
         self.model_ema.load_state_dict(self.student.state_dict())
         if self.has_gram_teacher:
-            self.gram.backbone.init_weights()
+            self.gram["backbone"].init_weights()
             self.gram_teacher_initialized = True
 
         # if self.misc.distillation_enabled:
@@ -741,8 +741,10 @@ class _DINO(_SSLTechnique):
 
     def technique_callbacks(self, logs_dir: Path):
         custom_callbacks = [
-            AsyncEvalCheckpointCallback(
-                period=self.iter_per_epoch * 10, name="teacher_checkpoint"
+            EvalCheckpointCallback(
+                period=self.iter_per_epoch * 10,
+                name="teacher_checkpoint",
+                model_attr="model_ema",
             ),
             ModelCheckpoint(
                 dirpath=logs_dir / "ckpt",
@@ -786,11 +788,12 @@ class _DINO(_SSLTechnique):
             dino_version=self.dino_version,
         )
 
-    def train(self):
-        super().train()
+    def train(self, mode: bool = True):
+        super().train(mode)
         self.teacher.eval()
         if self.has_gram_teacher:
             self.gram_teacher.eval()
+        return self
 
     def default_train_strategy(self, world_size) -> ParallelStrategy:
         return ModelParallelStrategy(
@@ -836,7 +839,6 @@ class DINOv2(_DINO):
         optim.dino_head_wd_multiplier = 0.0
         misc.train_checkpointing = False
         misc.train_compile = False
-        local_vars = locals()
         local_vars = {
             k: v for k, v in locals().items() if k not in {"self", "__class__"}
         }

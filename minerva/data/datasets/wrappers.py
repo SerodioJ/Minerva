@@ -19,10 +19,13 @@ class SSLDatasetWrapper(wrapt.ObjectProxy):
         item = self.__wrapped__[idx]
 
         if self.__transforms__ is not None:
-            aux = [i for i in item]
-            aux[0] = self.__transforms__(
-                aux[0]
-            )  # TODO check techniques that need to apply transform in more then one item
-            item = tuple(aux)
+            if isinstance(item, (tuple, list)):
+                aux = [i for i in item]
+                aux[0] = self.__transforms__(
+                    aux[0]
+                )  # TODO check techniques that need to apply transform in more then one item
+                item = tuple(aux)
+            else:
+                item = self.__transforms__(item)
 
         return item
