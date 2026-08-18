@@ -128,6 +128,8 @@ class LayerNorm(nn.Module):
     r"""
     LayerNorm supporting both `channels_last` (N, H, W, C) and `channels_first` (N, C, H, W) formats.
 
+    Source: https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.py
+    
     Parameters
     ----------
     normalized_shape : int

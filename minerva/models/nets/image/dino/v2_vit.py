@@ -15,10 +15,9 @@
 #   https://github.com/facebookresearch/dinov2/blob/main/dinov2/layers/patch_embed.py
 #   https://github.com/facebookresearch/dinov2/blob/main/dinov2/layers/swiglu_ffn.py
 
-import os
 from functools import partial
 import math
-from typing import Sequence, Tuple, Union, Callable, Optional
+from typing import Sequence, Tuple, Union, Callable, Optional, List, Dict
 
 import torch
 from torch import Tensor
