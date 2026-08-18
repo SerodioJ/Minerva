@@ -18,7 +18,20 @@ import torch.nn.functional as F
 
 
 class GramLoss(nn.Module):
-    """Implementation of the gram loss"""
+    """
+    Gram matrix matching loss between student and teacher patch feature representations.
+
+    Parameters
+    ----------
+    apply_norm : bool, default True
+        Whether to L2-normalize patch features before computing the Gram matrix.
+    img_level : bool, default True
+        If True, computes Gram matrix per image. If False, computes across the full batch.
+    remove_neg : bool, default True
+        If True, zeros out negative correlation values in both student and teacher Gram matrices.
+    remove_only_teacher_neg : bool, default False
+        If True, zeros out only the negative correlation values in the teacher Gram matrix.
+    """
 
     def __init__(
         self,
@@ -41,14 +54,22 @@ class GramLoss(nn.Module):
             assert self.remove_neg != self.remove_only_teacher_neg
 
     def forward(self, output_feats, target_feats, img_level=True):
-        """Compute the MSE loss between the gram matrix of the input and target features.
+        """
+        Compute the MSE loss between Gram matrices of student and teacher features.
 
-        Args:
-            output_feats: Pytorch tensor (B, N, dim) or (B*N, dim) if img_level == False
-            target_feats: Pytorch tensor (B, N, dim) or (B*N, dim) if img_level == False
-            img_level: bool, if true gram computed at the image level only else over the entire batch
-        Returns:
-            loss: scalar
+        Parameters
+        ----------
+        output_feats : torch.Tensor
+            Student feature tensor of shape `(B, N, D)` or `(B*N, D)` if `img_level=False`.
+        target_feats : torch.Tensor
+            Teacher feature tensor of shape `(B, N, D)` or `(B*N, D)` if `img_level=False`.
+        img_level : bool, default True
+            If True, computes Gram matrices per-image; otherwise computes across the flattened batch.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar MSE loss value.
         """
 
         # Dimensions of the tensor should be (B, N, dim)
@@ -93,23 +114,60 @@ class GramLoss(nn.Module):
         return self.mse_loss(student_sim, target_sim)
 
 
-def lossfunc(t, s, temp):  # noqa: F811
+def lossfunc(
+    t: torch.Tensor, s: torch.Tensor, temp: float
+) -> torch.Tensor:  # noqa: F811
+    """
+    Cross-entropy loss component between teacher probabilities and student logits.
+
+    Parameters
+    ----------
+    t : torch.Tensor
+        Teacher target probabilities.
+    s : torch.Tensor
+        Student unnormalized logits.
+    temp : float
+        Student temperature parameter.
+
+    Returns
+    -------
+    torch.Tensor
+        Cross-entropy values summed across the class/prototype dimension.
+    """
     return torch.sum(t.float() * F.log_softmax(s.float() / temp, dim=-1), dim=-1)
 
 
 class SinkhornKnoppTeacher(nn.Module):
     """
-    NOTE: This is a module and not a function in the `iBOTPatchLoss` class
-    This is because we want to torch.compile it, and torch.compil-ing a single
-    function with the `@torch.compile` decorator is bad.
-    It's better to `module.compile()` it, as we can control when we enable or
-    disable compilation globally.
+    Sinkhorn-Knopp algorithm module for teacher prototype assignment normalization.
+
+    NOTE: This is implemented as an nn.Module rather than a standalone function
+    to allow module-level compilation with `torch.compile`.
     """
 
     @torch.no_grad()
     def forward(
         self, teacher_output, teacher_temp, n_masked_patches_tensor, n_iterations=3
     ):
+        """
+        Run Sinkhorn-Knopp normalization on teacher outputs.
+
+        Parameters
+        ----------
+        teacher_output : torch.Tensor
+            Teacher unnormalized logits.
+        teacher_temp : float
+            Teacher temperature scaling.
+        n_masked_patches_tensor : torch.Tensor
+            Tensor holding the total number of masked patches.
+        n_iterations : int, default 3
+            Number of Sinkhorn-Knopp normalization iterations.
+
+        Returns
+        -------
+        torch.Tensor
+            Normalized soft assignment distribution matrix.
+        """
         teacher_output = teacher_output.float()
         # world_size = torch_dist.get_world_size() if torch_dist.is_initialized() else 1
         Q = torch.exp(
@@ -150,6 +208,19 @@ class SinkhornKnoppTeacher(nn.Module):
 
 
 class iBOTPatchLoss(nn.Module):
+    """
+    Masked image modeling patch loss (iBOT) for DINO self-supervised learning.
+
+    Parameters
+    ----------
+    patch_out_dim : int
+        Output dimensionality of the patch projection head (number of patch prototypes).
+    student_temp : float, default 0.1
+        Temperature parameter for the student network softmax.
+    center_momentum : float, default 0.9
+        Momentum rate used for exponential moving average updates of the teacher center.
+    """
+
     def __init__(self, patch_out_dim, student_temp=0.1, center_momentum=0.9):
         super().__init__()
         self.student_temp = student_temp
@@ -163,22 +234,51 @@ class iBOTPatchLoss(nn.Module):
         self.sinkhorn_knopp_teacher.compile()
 
     def init_weights(self) -> None:
+        """Initialize teacher center buffer with zeros."""
         self.center.zero_()
 
     @torch.no_grad()
     def softmax_center_teacher(
         self, teacher_patch_tokens, teacher_temp, update_centers=True
     ):
+        """
+        Apply centering and softmax temperature scaling to teacher patch tokens.
+
+        Parameters
+        ----------
+        teacher_patch_tokens : torch.Tensor
+            Unnormalized teacher patch token logits.
+        teacher_temp : float
+            Teacher sharpening temperature.
+        update_centers : bool, default True
+            Whether to apply any pending asynchronous center updates.
+
+        Returns
+        -------
+        torch.Tensor
+            Softmax probabilities for teacher patch tokens.
+        """
         if update_centers:
             self.apply_center_update()
         return F.softmax((teacher_patch_tokens - self.center) / teacher_temp, dim=-1)
 
     def forward(self, student_patch_tokens, teacher_patch_tokens, student_masks_flat):
         """
-        Cross-entropy between softmax outputs of the teacher and student networks.
-        student_patch_tokens: (B, N, D) tensor
-        teacher_patch_tokens: (B, N, D) tensor
-        student_masks_flat: (B, N) tensor
+        Compute cross-entropy loss between softmax outputs of student and teacher on masked patches.
+
+        Parameters
+        ----------
+        student_patch_tokens : torch.Tensor
+            Student patch token predictions of shape `(B, N, D)`.
+        teacher_patch_tokens : torch.Tensor
+            Teacher patch token probabilities of shape `(B, N, D)`.
+        student_masks_flat : torch.Tensor
+            Boolean mask tensor of shape `(B, N)` indicating masked patches.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean patch cross-entropy loss.
         """
         t = teacher_patch_tokens
         s = student_patch_tokens
@@ -196,6 +296,27 @@ class iBOTPatchLoss(nn.Module):
         n_masked_patches=None,
         masks_weight=None,
     ):
+        """
+        Compute masked patch loss directly on already-indexed masked tokens.
+
+        Parameters
+        ----------
+        student_patch_tokens_masked : torch.Tensor
+            Student patch logits for masked positions.
+        teacher_patch_tokens_masked : torch.Tensor
+            Teacher target probabilities for masked positions.
+        student_masks_flat : torch.Tensor
+            Boolean mask tensor indicating masked positions.
+        n_masked_patches : int, optional
+            Number of valid masked patches to truncate loss to.
+        masks_weight : torch.Tensor, optional
+            Optional weighting tensor per masked patch.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar loss value normalized by batch size.
+        """
         t = teacher_patch_tokens_masked
         s = student_patch_tokens_masked
         # loss = torch.sum(t * F.log_softmax(s / self.student_temp, dim=-1), dim=-1)
@@ -213,10 +334,19 @@ class iBOTPatchLoss(nn.Module):
 
     @torch.no_grad()
     def update_center(self, teacher_patch_tokens):
+        """Start asynchronous reduction to update teacher center buffer."""
         self.reduce_center_update(teacher_patch_tokens)
 
     @torch.no_grad()
     def reduce_center_update(self, teacher_patch_tokens):
+        """
+        Compute batch center and initiate asynchronous all-reduce across distributed ranks.
+
+        Parameters
+        ----------
+        teacher_patch_tokens : torch.Tensor
+            Teacher patch tokens from the current batch.
+        """
         self.updated = False
         self.len_teacher_patch_tokens = len(teacher_patch_tokens)
         self.async_batch_center = torch.sum(
@@ -229,6 +359,7 @@ class iBOTPatchLoss(nn.Module):
 
     @torch.no_grad()
     def apply_center_update(self):
+        """Finalize asynchronous center reduction and apply exponential moving average update."""
         if self.updated is False:
             world_size = (
                 torch_dist.get_world_size() if torch_dist.is_initialized() else 1
@@ -246,7 +377,13 @@ class iBOTPatchLoss(nn.Module):
 
 
 class KoLeoLoss(nn.Module):
-    """Kozachenko-Leonenko entropic loss regularizer from Sablayrolles et al. - 2018 - Spreading vectors for similarity search"""
+    """
+    Kozachenko-Leonenko entropic loss regularizer to maximize representation uniformity on the unit sphere.
+
+    References
+    ----------
+    Sablayrolles et al., "Spreading vectors for similarity search", 2018.
+    """
 
     def __init__(self):
         super().__init__()
@@ -254,8 +391,17 @@ class KoLeoLoss(nn.Module):
 
     def pairwise_NNs_inner(self, x):
         """
-        Pairwise nearest neighbors for L2-normalized vectors.
-        Uses Torch rather than Faiss to remain on GPU.
+        Pairwise nearest neighbors for L2-normalized vectors via GPU inner product.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            L2-normalized feature vectors of shape `(B, D)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Indices of the nearest neighbor for each sample.
         """
         # parwise dot products (= inverse distance)
         dots = torch.mm(x, x.t())
@@ -266,8 +412,19 @@ class KoLeoLoss(nn.Module):
 
     def forward(self, student_output, eps=1e-8):
         """
-        Args:
-            student_output (BxD): backbone output of student
+        Compute KoLeo entropy regularization loss.
+
+        Parameters
+        ----------
+        student_output : torch.Tensor
+            Student backbone output representations of shape `(B, D)`.
+        eps : float, default 1e-8
+            Small epsilon for numerical stability.
+
+        Returns
+        -------
+        torch.Tensor
+            KoLeo loss scalar.
         """
         with torch.autocast("cuda", enabled=False):
             student_output = F.normalize(student_output, eps=eps, p=2, dim=-1)
@@ -280,7 +437,16 @@ class KoLeoLoss(nn.Module):
 
 
 class KoLeoLossDistributed(nn.Module):
-    """Kozachenko-Leonenko entropic loss regularizer from Sablayrolles et al. - 2018 - Spreading vectors for similarity search"""
+    """
+    Distributed Kozachenko-Leonenko entropic loss regularizer computed across multiple GPUs.
+
+    Parameters
+    ----------
+    topk : int, default 1
+        Number of nearest neighbors to consider.
+    loss_group_size : int, optional
+        Size of nearest neighbor feature candidate set. If None, uses global batch size.
+    """
 
     def __init__(self, topk=1, loss_group_size: int | None = None):
         super().__init__()
@@ -290,8 +456,21 @@ class KoLeoLossDistributed(nn.Module):
 
     def pairwise_NNs_inner(self, x, all_x, rank):
         """
-        Pairwise nearest neighbors for L2-normalized vectors.
-        Uses Torch rather than Faiss to remain on GPU.
+        Find nearest neighbors in the global feature set for local batch vectors.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Local feature representations of shape `(local_B, D)`.
+        all_x : torch.Tensor
+            Gathered feature representations of shape `(global_B, D)`.
+        rank : int
+            Rank index within the loss group.
+
+        Returns
+        -------
+        torch.Tensor
+            Indices of top-k nearest neighbors in `all_x`.
         """
         # parwise dot products (= inverse distance)
         dots = torch.mm(x, all_x.t())  # local_B x global_B
@@ -306,8 +485,19 @@ class KoLeoLossDistributed(nn.Module):
 
     def forward(self, student_output, eps=1e-8):
         """
-        Args:
-            student_output (BxD): backbone output of student
+        Compute distributed KoLeo loss across GPUs.
+
+        Parameters
+        ----------
+        student_output : torch.Tensor
+            Local student backbone output representations of shape `(local_B, D)`.
+        eps : float, default 1e-8
+            Small epsilon for numerical stability.
+
+        Returns
+        -------
+        torch.Tensor
+            Distributed KoLeo loss scalar.
         """
         with torch.autocast("cuda", enabled=False):
             student_output = F.normalize(
@@ -366,6 +556,21 @@ class KoLeoLossDistributed(nn.Module):
 
 
 class DINOLoss(nn.Module):
+    """
+    DINO loss module supporting both DINOv2 and DINOv3 formulations with centering and sharpening.
+
+    Parameters
+    ----------
+    out_dim : int
+        Number of output prototypes for the DINO projection head.
+    student_temp : float, default 0.1
+        Temperature for the student network softmax.
+    center_momentum : float, default 0.9
+        Momentum rate for the teacher center buffer EMA update.
+    dino_version : {2, 3}, default 3
+        DINO version formulation to use for forward loss calculation.
+    """
+
     def __init__(
         self,
         out_dim,
@@ -384,10 +589,28 @@ class DINOLoss(nn.Module):
         self.dino_version = dino_version
 
     def init_weights(self) -> None:
+        """Initialize teacher center buffer with zeros."""
         self.center.zero_()
 
     @torch.no_grad()
     def softmax_center_teacher(self, teacher_output, teacher_temp, update_centers=True):
+        """
+        Center and sharpen teacher outputs using softmax.
+
+        Parameters
+        ----------
+        teacher_output : torch.Tensor
+            Teacher unnormalized logits.
+        teacher_temp : float
+            Teacher sharpening temperature.
+        update_centers : bool, default True
+            Whether to apply pending asynchronous center updates.
+
+        Returns
+        -------
+        torch.Tensor
+            Sharpened teacher probabilities.
+        """
         if update_centers:
             self.apply_center_update()
         # teacher centering and sharpening
@@ -395,6 +618,23 @@ class DINOLoss(nn.Module):
 
     @torch.no_grad()
     def sinkhorn_knopp_teacher(self, teacher_output, teacher_temp, n_iterations=3):
+        """
+        Run Sinkhorn-Knopp algorithm on teacher predictions.
+
+        Parameters
+        ----------
+        teacher_output : torch.Tensor
+            Teacher logits of shape `(batch, prototypes)`.
+        teacher_temp : float
+            Teacher sharpening temperature.
+        n_iterations : int, default 3
+            Number of normalization iterations.
+
+        Returns
+        -------
+        torch.Tensor
+            Target distribution matrix Q.
+        """
         # teacher_output: [batch, prototypes]
         teacher_output = teacher_output.float()
         world_size = torch_dist.get_world_size() if torch_dist.is_initialized() else 1
@@ -430,6 +670,14 @@ class DINOLoss(nn.Module):
         return Q.t()
 
     def forward(self, **kwargs):
+        """
+        Dispatch forward pass based on `self.dino_version`.
+
+        Returns
+        -------
+        torch.Tensor
+            Computed DINO loss scalar.
+        """
         if self.dino_version == 2:
             return self.v2_forward(**kwargs)
         elif self.dino_version == 3:
@@ -439,7 +687,19 @@ class DINOLoss(nn.Module):
 
     def v2_forward(self, student_output_list, teacher_out_softmaxed_centered_list):
         """
-        Cross-entropy between softmax outputs of the teacher and student networks.
+        Compute DINOv2 multi-crop cross-entropy loss between student outputs and teacher probabilities.
+
+        Parameters
+        ----------
+        student_output_list : list of torch.Tensor
+            List of student crop logits.
+        teacher_out_softmaxed_centered_list : list of torch.Tensor
+            List of centered and softmaxed teacher crop probabilities.
+
+        Returns
+        -------
+        torch.Tensor
+            Total DINOv2 loss across all crop pairs.
         """
         total_loss = 0
         for s in student_output_list:
@@ -451,20 +711,21 @@ class DINOLoss(nn.Module):
 
     def v3_forward(self, student_logits, teacher_probs, ignore_diagonal=False):
         """
-        Cross-entropy between softmax outputs of the teacher and student networks.
-        student_logits: [student crops, batch, prototypes]
-        teacher_probs:  [teacher crops, batch, prototypes] must sum to 1 over the last dim
+        Compute DINOv3 vectorized cross-entropy loss between student logits and teacher probabilities.
 
-        loss = 0
-        count = 0
-        for each sample `b` in the batch:
-            for each student crop `s` of this sample:
-                for each teacher crop `t` of this sample:
-                    if ignore_diagonal and s == t:
-                        continue
-                    loss += cross_entropy(softmax(student_logits[s, b] / student_temp), teacher_probs[t, b])
-                    count += 1
-        return loss / count
+        Parameters
+        ----------
+        student_logits : torch.Tensor
+            Student predictions of shape `(student_crops, B, K)`.
+        teacher_probs : torch.Tensor
+            Teacher probability targets of shape `(teacher_crops, B, K)`.
+        ignore_diagonal : bool, default False
+            Whether to exclude matched crop index pairs `s == t` from loss.
+
+        Returns
+        -------
+        torch.Tensor
+            Mean DINOv3 cross-entropy loss.
         """
         student_crops, B, K = student_logits.shape
         teacher_crops, _, _ = teacher_probs.shape
@@ -482,10 +743,19 @@ class DINOLoss(nn.Module):
 
     @torch.no_grad()
     def update_center(self, teacher_output):
+        """Start asynchronous reduction to update teacher center buffer."""
         self.reduce_center_update(teacher_output)
 
     @torch.no_grad()
     def reduce_center_update(self, teacher_output):
+        """
+        Compute batch center and initiate asynchronous all-reduce.
+
+        Parameters
+        ----------
+        teacher_output : torch.Tensor
+            Teacher prototype logits for the current batch.
+        """
         self.updated = False
         self.len_teacher_output = len(teacher_output)
         self.async_batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
@@ -496,6 +766,7 @@ class DINOLoss(nn.Module):
 
     @torch.no_grad()
     def apply_center_update(self):
+        """Finalize asynchronous center reduction and apply exponential moving average update."""
         if self.updated is False:
             world_size = (
                 torch_dist.get_world_size() if torch_dist.is_initialized() else 1

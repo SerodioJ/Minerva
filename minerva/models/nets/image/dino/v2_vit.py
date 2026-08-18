@@ -29,6 +29,25 @@ from torch.nn.init import trunc_normal_
 
 
 class SwiGLUFFN(nn.Module):
+    """
+    SwiGLU Feed-Forward Network layer.
+
+    Parameters
+    ----------
+    in_features : int
+        Input feature dimension.
+    hidden_features : int, optional
+        Hidden layer feature dimension.
+    out_features : int, optional
+        Output feature dimension.
+    act_layer : callable, optional
+        Activation function.
+    drop : float, default 0.0
+        Dropout probability.
+    bias : bool, default True
+        Whether linear projections include bias.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -45,6 +64,7 @@ class SwiGLUFFN(nn.Module):
         self.w3 = nn.Linear(hidden_features, out_features, bias=bias)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through SwiGLU FFN."""
         x12 = self.w12(x)
         x1, x2 = x12.chunk(2, dim=-1)
         hidden = F.silu(x1) * x2
@@ -59,6 +79,27 @@ SwiGLU = SwiGLUFFN
 def named_apply(
     fn: Callable, module: nn.Module, name="", depth_first=True, include_root=False
 ) -> nn.Module:
+    """
+    Apply a function recursively to named submodules.
+
+    Parameters
+    ----------
+    fn : callable
+        Function to execute on each submodule.
+    module : nn.Module
+        Root module.
+    name : str, default ""
+        Prefix name for submodules.
+    depth_first : bool, default True
+        Whether to recurse depth-first.
+    include_root : bool, default False
+        Whether to execute `fn` on the root module itself.
+
+    Returns
+    -------
+    nn.Module
+        Modified root module.
+    """
     if not depth_first and include_root:
         fn(module=module, name=name)
     for child_name, child_module in module.named_children():
@@ -76,7 +117,16 @@ def named_apply(
 
 
 def init_weights_vit_timm(module: nn.Module, name: str = ""):
-    """ViT weight initialization, original timm impl (for reproducibility)"""
+    """
+    Initialize ViT layer weights following timm convention for reproducibility.
+
+    Parameters
+    ----------
+    module : nn.Module
+        PyTorch module whose weights are to be initialized.
+    name : str, default ""
+        Name of the module within the hierarchy.
+    """
     if isinstance(module, nn.Linear):
         trunc_normal_(module.weight, std=0.02)
         if module.bias is not None:
@@ -98,6 +148,7 @@ def init_weights_vit_timm(module: nn.Module, name: str = ""):
 
 
 def vit_small(patch_size=16, num_register_tokens=0, **kwargs):
+    """Construct a DINOv2 ViT-Small model (embed_dim=384, depth=12, num_heads=6)."""
     depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -113,6 +164,7 @@ def vit_small(patch_size=16, num_register_tokens=0, **kwargs):
 
 
 def vit_base(patch_size=16, num_register_tokens=0, **kwargs):
+    """Construct a DINOv2 ViT-Base model (embed_dim=768, depth=12, num_heads=12)."""
     depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -128,6 +180,7 @@ def vit_base(patch_size=16, num_register_tokens=0, **kwargs):
 
 
 def vit_large(patch_size=16, num_register_tokens=0, **kwargs):
+    """Construct a DINOv2 ViT-Large model (embed_dim=1024, depth=24, num_heads=16)."""
     depth = kwargs.pop("depth", 24)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -143,9 +196,7 @@ def vit_large(patch_size=16, num_register_tokens=0, **kwargs):
 
 
 def vit_giant2(patch_size=16, num_register_tokens=0, **kwargs):
-    """
-    Close to ViT-giant, with embed-dim 1536 and 24 heads => embed-dim per head 64
-    """
+    """Construct a DINOv2 ViT-Giant model (embed_dim=1536, depth=40, num_heads=24)."""
     depth = kwargs.pop("depth", 40)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -162,6 +213,25 @@ def vit_giant2(patch_size=16, num_register_tokens=0, **kwargs):
 
 # layers.attention
 class Attention(nn.Module):
+    """
+    Standard Multi-Head Self-Attention module.
+
+    Parameters
+    ----------
+    dim : int
+        Input and output feature dimension.
+    num_heads : int, default 8
+        Number of attention heads.
+    qkv_bias : bool, default False
+        Whether query/key/value projections include bias.
+    proj_bias : bool, default True
+        Whether output linear projection includes bias.
+    attn_drop : float, default 0.0
+        Dropout rate on attention probabilities.
+    proj_drop : float, default 0.0
+        Dropout rate on output projection.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -182,6 +252,7 @@ class Attention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Compute multi-head self-attention."""
         B, N, C = x.shape
         qkv = (
             self.qkv(x)
@@ -202,7 +273,12 @@ class Attention(nn.Module):
 
 
 class MemEffAttention(Attention):
+    """
+    Memory-efficient multi-head attention using PyTorch scaled dot product attention.
+    """
+
     def forward(self, x: Tensor, attn_bias=None) -> Tensor:
+        """Compute memory-efficient scaled dot product attention."""
         B, N, C = x.shape
         qkv = (
             self.qkv(x)
@@ -228,6 +304,25 @@ class MemEffAttention(Attention):
 
 # layers.mlp
 class Mlp(nn.Module):
+    """
+    Multi-Layer Perceptron (MLP) block with activation and dropout.
+
+    Parameters
+    ----------
+    in_features : int
+        Input feature dimension.
+    hidden_features : int, optional
+        Hidden layer dimension.
+    out_features : int, optional
+        Output feature dimension.
+    act_layer : callable, default nn.GELU
+        Activation layer constructor.
+    drop : float, default 0.0
+        Dropout probability.
+    bias : bool, default True
+        Whether linear layers include bias.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -246,6 +341,7 @@ class Mlp(nn.Module):
         self.drop = nn.Dropout(drop)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through MLP block."""
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
@@ -256,6 +352,41 @@ class Mlp(nn.Module):
 
 # layers.block
 class _Block(nn.Module):
+    """
+    Transformer block containing self-attention and feed-forward network with LayerScale and stochastic depth.
+
+    Parameters
+    ----------
+    dim : int
+        Embedding dimension.
+    num_heads : int
+        Number of attention heads.
+    mlp_ratio : float, default 4.0
+        Ratio of MLP hidden dimension to embedding dimension.
+    qkv_bias : bool, default False
+        Whether attention QKV projections include bias.
+    proj_bias : bool, default True
+        Whether attention output projection includes bias.
+    ffn_bias : bool, default True
+        Whether FFN linear layers include bias.
+    drop : float, default 0.0
+        Dropout rate.
+    attn_drop : float, default 0.0
+        Attention dropout rate.
+    init_values : float, optional
+        Initial value for LayerScale gamma parameter.
+    drop_path : float, default 0.0
+        Stochastic depth drop path rate.
+    act_layer : callable, default nn.GELU
+        Activation function.
+    norm_layer : callable, default nn.LayerNorm
+        Normalization layer.
+    attn_class : callable, default Attention
+        Attention class constructor.
+    ffn_layer : callable, default Mlp
+        FFN class constructor.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -306,6 +437,8 @@ class _Block(nn.Module):
         self.sample_drop_ratio = drop_path
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through transformer block."""
+
         def attn_residual_func(x: Tensor) -> Tensor:
             return self.ls1(self.attn(self.norm1(x)))
 
@@ -338,6 +471,23 @@ def drop_add_residual_stochastic_depth(
     residual_func: Callable[[Tensor], Tensor],
     sample_drop_ratio: float = 0.0,
 ) -> Tensor:
+    """
+    Apply stochastic depth by dropping residual paths for a random subset of samples in the batch.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input feature tensor.
+    residual_func : callable
+        Function computing the residual branch.
+    sample_drop_ratio : float, default 0.0
+        Fraction of batch samples to drop.
+
+    Returns
+    -------
+    torch.Tensor
+        Output tensor with residual added to surviving samples.
+    """
     # 1) extract subset using permutation
     b, n, d = x.shape
     sample_subset_size = max(int(b * (1 - sample_drop_ratio)), 1)
@@ -360,7 +510,14 @@ def drop_add_residual_stochastic_depth(
 
 
 class Block(_Block):
-    def forward(self, x_or_x_list):
+    """
+    Transformer Block wrapper supporting either a single Tensor or a list of Tensors.
+    """
+
+    def forward(
+        self, x_or_x_list: Union[Tensor, List[Tensor]]
+    ) -> Union[Tensor, List[Tensor]]:
+        """Forward pass supporting single Tensor or list of crop Tensors."""
         if isinstance(x_or_x_list, Tensor):
             return super().forward(x_or_x_list)
         elif isinstance(x_or_x_list, list):
@@ -375,7 +532,24 @@ class Block(_Block):
 # layers.drop path
 
 
-def drop_path(x, drop_prob: float = 0.0, training: bool = False):
+def drop_path(x: Tensor, drop_prob: float = 0.0, training: bool = False) -> Tensor:
+    """
+    Apply stochastic depth (drop path) per sample.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor.
+    drop_prob : float, default 0.0
+        Probability of dropping paths.
+    training : bool, default False
+        Whether currently in training mode.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor after stochastic depth.
+    """
     if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
@@ -390,18 +564,39 @@ def drop_path(x, drop_prob: float = 0.0, training: bool = False):
 
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks)."""
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+
+    Parameters
+    ----------
+    drop_prob : float, optional
+        Drop path probability.
+    """
 
     def __init__(self, drop_prob=None):
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward pass applying drop_path."""
         return drop_path(x, self.drop_prob, self.training)
 
 
 # layers.layer_scale
 class LayerScale(nn.Module):
+    """
+    LayerScale module for scaling residual outputs by learnable diagonal parameters.
+
+    Parameters
+    ----------
+    dim : int
+        Channel dimension.
+    init_values : float or torch.Tensor, default 1e-5
+        Initial scaling value.
+    inplace : bool, default False
+        Whether to perform multiplication in-place.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -414,11 +609,13 @@ class LayerScale(nn.Module):
         self.init_values = init_values
 
     def forward(self, x: Tensor) -> Tensor:
+        """Scale input tensor by gamma."""
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
 
 
 # layers.patch_embed
-def make_2tuple(x):
+def make_2tuple(x: Union[int, Tuple[int, int]]) -> Tuple[int, int]:
+    """Convert an int or tuple to a 2-element tuple."""
     if isinstance(x, tuple):
         assert len(x) == 2
         return x
@@ -431,12 +628,20 @@ class PatchEmbed(nn.Module):
     """
     2D image to patch embedding: (B,C,H,W) -> (B,N,D)
 
-    Args:
-        img_size: Image size.
-        patch_size: Patch token size.
-        in_chans: Number of input image channels.
-        embed_dim: Number of linear projection output channels.
-        norm_layer: Normalization layer.
+    Parameters
+    ----------
+    img_size : int or tuple of int, default 224
+        Input image resolution.
+    patch_size : int or tuple of int, default 16
+        Patch resolution.
+    in_chans : int, default 3
+        Number of input channels.
+    embed_dim : int, default 768
+        Embedding projection dimension.
+    norm_layer : callable, optional
+        Normalization layer.
+    flatten_embedding : bool, default True
+        Whether to flatten spatial patch grid to a token sequence.
     """
 
     def __init__(
@@ -473,6 +678,7 @@ class PatchEmbed(nn.Module):
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
+        """Convert input image tensor to patch embeddings."""
         _, _, H, W = x.shape
         patch_H, patch_W = self.patch_size
 
@@ -492,6 +698,7 @@ class PatchEmbed(nn.Module):
         return x
 
     def flops(self) -> float:
+        """Estimate FLOP count for patch projection."""
         Ho, Wo = self.patches_resolution
         flops = (
             Ho
@@ -507,6 +714,25 @@ class PatchEmbed(nn.Module):
 
 # layers.swiglu_ffn
 class SwiGLUFFNFused(SwiGLU):
+    """
+    Fused SwiGLU FFN with 2/3 hidden dimension ratio rounded to multiples of 8.
+
+    Parameters
+    ----------
+    in_features : int
+        Input feature dimension.
+    hidden_features : int, optional
+        Hidden layer dimension.
+    out_features : int, optional
+        Output feature dimension.
+    act_layer : callable, optional
+        Activation layer.
+    drop : float, default 0.0
+        Dropout rate.
+    bias : bool, default True
+        Whether linear projections include bias.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -528,6 +754,55 @@ class SwiGLUFFNFused(SwiGLU):
 
 
 class DinoVisionTransformer(nn.Module):
+    """
+    DINOv2 Vision Transformer (ViT) architecture with register tokens and stochastic depth.
+
+    Parameters
+    ----------
+    img_size : int or tuple of int, default 224
+        Input image resolution.
+    patch_size : int or tuple of int, default 16
+        Patch resolution.
+    in_chans : int, default 3
+        Number of input image channels.
+    embed_dim : int, default 768
+        Embedding feature dimension.
+    depth : int, default 12
+        Number of transformer blocks.
+    num_heads : int, default 12
+        Number of attention heads.
+    ffn_ratio : float, default 4.0
+        Expansion ratio for FFN hidden dimension.
+    qkv_bias : bool, default True
+        Whether QKV projections include bias.
+    ffn_bias : bool, default True
+        Whether FFN projections include bias.
+    proj_bias : bool, default True
+        Whether attention projection includes bias.
+    drop_path_rate : float, default 0.0
+        Stochastic depth drop path rate.
+    drop_path_uniform : bool, default False
+        Whether to apply uniform drop path rate across all blocks.
+    layerscale_init : float, optional
+        LayerScale initial diagonal value.
+    embed_layer : callable, default PatchEmbed
+        Patch embedding constructor.
+    act_layer : callable, default nn.GELU
+        Activation constructor.
+    block_fn : callable, default Block
+        Transformer block constructor.
+    ffn_layer : {"mlp", "swiglu", "swiglufused", "identity"}, default "mlp"
+        Feed-forward network type.
+    block_chunks : int, default 1
+        Number of chunks to split block sequence for FSDP wrapping.
+    num_register_tokens : int, default 0
+        Number of additional register tokens.
+    interpolate_antialias : bool, default False
+        Whether to use antialiasing when interpolating positional encodings.
+    interpolate_offset : float, default 0.1
+        Offset for coordinate grid interpolation.
+    """
+
     def __init__(
         self,
         img_size=224,
@@ -552,31 +827,6 @@ class DinoVisionTransformer(nn.Module):
         interpolate_antialias=False,
         interpolate_offset=0.1,
     ):
-        """
-        Args:
-            img_size (int, tuple): input image size
-            patch_size (int, tuple): patch size
-            in_chans (int): number of input channels
-            embed_dim (int): embedding dimension
-            depth (int): depth of transformer
-            num_heads (int): number of attention heads
-            mlp_ratio (int): ratio of mlp hidden dim to embedding dim
-            qkv_bias (bool): enable bias for qkv if True
-            proj_bias (bool): enable bias for proj in attn if True
-            ffn_bias (bool): enable bias for ffn if True
-            drop_path_rate (float): stochastic depth rate
-            drop_path_uniform (bool): apply uniform drop rate across blocks
-            weight_init (str): weight init scheme
-            init_values (float): layer-scale init values
-            embed_layer (nn.Module): patch embedding layer
-            act_layer (nn.Module): MLP activation layer
-            block_fn (nn.Module): transformer block class
-            ffn_layer (str): "mlp", "swiglu", "swiglufused" or "identity"
-            block_chunks: (int) split block sequence into block_chunks units for FSDP wrap
-            num_register_tokens: (int) number of extra cls tokens (so-called "registers")
-            interpolate_antialias: (str) flag to apply anti-aliasing when interpolating positional embeddings
-            interpolate_offset: (float) work-around offset to apply when interpolating positional embeddings
-        """
         super().__init__()
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
@@ -661,13 +911,31 @@ class DinoVisionTransformer(nn.Module):
         self.init_weights()
 
     def init_weights(self):
+        """Initialize positional embeddings, CLS token, register tokens, and submodules."""
         trunc_normal_(self.pos_embed, std=0.02)
         nn.init.normal_(self.cls_token, std=1e-6)
         if self.register_tokens is not None:
             nn.init.normal_(self.register_tokens, std=1e-6)
         named_apply(init_weights_vit_timm, self)
 
-    def interpolate_pos_encoding(self, x, w, h):
+    def interpolate_pos_encoding(self, x: Tensor, w: int, h: int) -> Tensor:
+        """
+        Bicubic interpolation of learned positional embeddings to match input spatial dimensions.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input token tensor of shape `(B, N, D)`.
+        w : int
+            Image pixel width.
+        h : int
+            Image pixel height.
+
+        Returns
+        -------
+        torch.Tensor
+            Interpolated positional encoding tensor.
+        """
         previous_dtype = x.dtype
         npatch = x.shape[1] - 1
         N = self.pos_embed.shape[1] - 1
@@ -703,7 +971,24 @@ class DinoVisionTransformer(nn.Module):
             previous_dtype
         )
 
-    def prepare_tokens_with_masks(self, x, masks=None):
+    def prepare_tokens_with_masks(
+        self, x: Tensor, masks: Optional[Tensor] = None
+    ) -> Tensor:
+        """
+        Convert raw image to patch tokens with positional embeddings, CLS token, register tokens, and optional masks.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input image tensor of shape `(B, C, H, W)`.
+        masks : torch.Tensor, optional
+            Boolean mask tensor of shape `(B, num_patches)`.
+
+        Returns
+        -------
+        torch.Tensor
+            Prepared token tensor of shape `(B, num_tokens + num_patches, D)`.
+        """
         B, nc, w, h = x.shape
         x = self.patch_embed(x)
         if masks is not None:
@@ -726,7 +1011,24 @@ class DinoVisionTransformer(nn.Module):
 
         return x
 
-    def forward_features_list(self, x_list, masks_list):
+    def forward_features_list(
+        self, x_list: List[Tensor], masks_list: List[Tensor]
+    ) -> List[Dict[str, Tensor]]:
+        """
+        Forward pass for a list of crop tensors and masks.
+
+        Parameters
+        ----------
+        x_list : list of torch.Tensor
+            List of image tensors.
+        masks_list : list of torch.Tensor
+            List of boolean mask tensors.
+
+        Returns
+        -------
+        list of dict
+            List of dictionaries containing normalized token representations per crop.
+        """
         x = [
             self.prepare_tokens_with_masks(x, masks)
             for x, masks in zip(x_list, masks_list)
@@ -749,7 +1051,24 @@ class DinoVisionTransformer(nn.Module):
             )
         return output
 
-    def forward_features(self, x, masks=None):
+    def forward_features(
+        self, x: Union[Tensor, List[Tensor]], masks: Optional[Tensor] = None
+    ) -> Union[Dict[str, Tensor], List[Dict[str, Tensor]]]:
+        """
+        Extract token features from a single image tensor or list of crops.
+
+        Parameters
+        ----------
+        x : torch.Tensor or list of torch.Tensor
+            Input image or crops.
+        masks : torch.Tensor, optional
+            Boolean mask tensor.
+
+        Returns
+        -------
+        dict or list of dict
+            Dictionary of token outputs.
+        """
         if isinstance(x, list):
             return self.forward_features_list(x, masks)
 
@@ -767,7 +1086,10 @@ class DinoVisionTransformer(nn.Module):
             "masks": masks,
         }
 
-    def _get_intermediate_layers_not_chunked(self, x, n=1):
+    def _get_intermediate_layers_not_chunked(
+        self, x: Tensor, n: Union[int, Sequence] = 1
+    ) -> List[Tensor]:
+        """Extract intermediate features from non-chunked blocks."""
         x = self.prepare_tokens_with_masks(x)
         # If n is an int, take the n last blocks. If it's a list, take them
         output, total_block_len = [], len(self.blocks)
@@ -783,7 +1105,10 @@ class DinoVisionTransformer(nn.Module):
         ), f"only {len(output)} / {len(blocks_to_take)} blocks found"
         return output
 
-    def _get_intermediate_layers_chunked(self, x, n=1):
+    def _get_intermediate_layers_chunked(
+        self, x: Tensor, n: Union[int, Sequence] = 1
+    ) -> List[Tensor]:
+        """Extract intermediate features from chunked FSDP blocks."""
         x = self.prepare_tokens_with_masks(x)
         output, i, total_block_len = [], 0, len(self.blocks[-1])
         # If n is an int, take the n last blocks. If it's a list, take them
@@ -809,6 +1134,27 @@ class DinoVisionTransformer(nn.Module):
         return_class_token: bool = False,
         norm=True,
     ) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor]]]:
+        """
+        Retrieve intermediate block outputs.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input image tensor of shape `(B, C, H, W)`.
+        n : int or sequence of int, default 1
+            Number of last blocks to return, or sequence of block indices.
+        reshape : bool, default False
+            If True, reshapes spatial patch tokens to `(B, D, H_p, W_p)`.
+        return_class_token : bool, default False
+            If True, returns `(patch_tokens, cls_token)` tuples.
+        norm : bool, default True
+            Whether to apply final LayerNorm to intermediate outputs.
+
+        Returns
+        -------
+        tuple
+            Tuple of feature tensors or `(patch_tokens, cls_token)` pairs.
+        """
         if self.chunked_blocks:
             outputs = self._get_intermediate_layers_chunked(x, n)
         else:
@@ -829,7 +1175,20 @@ class DinoVisionTransformer(nn.Module):
             return tuple(zip(outputs, class_tokens))
         return tuple(outputs)
 
-    def forward(self, *args, is_training=False, **kwargs):
+    def forward(self, *args, is_training: bool = False, **kwargs):
+        """
+        Forward pass returning token representations (training) or normalized CLS token (eval).
+
+        Parameters
+        ----------
+        is_training : bool, default False
+            If True, returns dictionary of all token outputs. If False, returns head(cls_token).
+
+        Returns
+        -------
+        torch.Tensor or dict
+            Evaluation representation or feature output dictionary.
+        """
         ret = self.forward_features(*args, **kwargs)
         if is_training:
             return ret

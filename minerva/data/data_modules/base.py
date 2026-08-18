@@ -179,6 +179,21 @@ class MinervaDataModule(LightningDataModule):
         return self._predict_dataset
 
     def setup_sampler(self, sample_count, kwargs):
+        """
+        Configure the sampler for dataloaders if a custom sampler class was provided.
+
+        Parameters
+        ----------
+        sample_count : int
+            Total number of samples in the target dataset.
+        kwargs : dict
+            Dataloader keyword arguments.
+
+        Returns
+        -------
+        dict
+            Updated dataloader kwargs with the instantiated sampler and shuffle disabled.
+        """
         if self._sampler_cls is not None:
             kwargs = dict(kwargs)
             world_size = self.trainer.world_size if self.trainer else 1

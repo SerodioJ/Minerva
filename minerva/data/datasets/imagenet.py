@@ -19,12 +19,15 @@ from minerva.data.readers.reader import _Reader
 
 
 class _Split(Enum):
+    """ImageNet dataset split enumeration."""
+
     TRAIN = "train"
     VAL = "val"
     TEST = "test"  # NOTE: torchvision does not support the test split
 
     @property
     def length(self) -> int:
+        """Return the standard number of samples for this split."""
         split_lengths = {
             _Split.TRAIN: 1_281_167,
             _Split.VAL: 50_000,
@@ -33,11 +36,39 @@ class _Split(Enum):
         return split_lengths[self]
 
     def get_dirname(self, class_id: Optional[str] = None) -> str:
+        """
+        Get the directory name for a given class within the split.
+
+        Parameters
+        ----------
+        class_id : str, optional
+            The WordNet synset/class identifier.
+
+        Returns
+        -------
+        str
+            Directory path relative to the dataset root.
+        """
         return self.value if class_id is None else os.path.join(self.value, class_id)
 
     def get_image_relpath(
         self, actual_index: int, class_id: Optional[str] = None
     ) -> str:
+        """
+        Get relative file path for an image.
+
+        Parameters
+        ----------
+        actual_index : int
+            Index of the image within the class or split.
+        class_id : str, optional
+            The WordNet synset/class identifier.
+
+        Returns
+        -------
+        str
+            Relative path to the image JPEG file.
+        """
         if self == _Split.TRAIN:
             dirname = self.get_dirname(class_id)
             basename = f"{class_id}_{actual_index}"
@@ -47,6 +78,19 @@ class _Split(Enum):
         return os.path.join(dirname, basename + ".JPEG")
 
     def parse_image_relpath(self, image_relpath: str) -> Tuple[str, int]:
+        """
+        Parse relative image file path into class ID and index.
+
+        Parameters
+        ----------
+        image_relpath : str
+            Relative path to parse.
+
+        Returns
+        -------
+        tuple of (str, int)
+            A tuple of (class_id, actual_index).
+        """
         assert self != _Split.TEST
         dirname, filename = os.path.split(image_relpath)
         class_id = os.path.split(dirname)[-1]
@@ -56,6 +100,23 @@ class _Split(Enum):
 
 
 class ImageNet(SimpleDataset):
+    """
+    ImageNet (ILSVRC 2012) dataset implemented as a Minerva `SimpleDataset`.
+
+    Parameters
+    ----------
+    split : {"train", "test", "val"}
+        Dataset split to load.
+    root : str
+        Path to the root directory containing the ImageNet images.
+    extra : str
+        Path to the directory containing extra metadata `.npy` entries files.
+    transform : callable, optional
+        Transform to apply to input images.
+    target_transform : callable, optional
+        Transform to apply to class targets.
+    """
+
     Split = Union[_Split]
 
     def __init__(
@@ -80,6 +141,19 @@ class ImageNet(SimpleDataset):
 
 
 class _ImageNetBaseReader(_Reader):
+    """
+    Base reader for ImageNet metadata and file indexing.
+
+    Parameters
+    ----------
+    root : str
+        Path to the root directory of the ImageNet images.
+    extra : str
+        Path to the directory containing extra `.npy` metadata entries.
+    split : ImageNet.Split
+        Dataset split.
+    """
+
     def __init__(self, root: str, extra: str, split: "ImageNet.Split"):
         self.root = root
         self._extra_root = extra
@@ -91,6 +165,7 @@ class _ImageNetBaseReader(_Reader):
 
     @property
     def split(self) -> "ImageNet.Split":
+        """Return the dataset split."""
         return self._split
 
     def _get_extra_full_path(self, extra_path: str) -> str:
@@ -111,6 +186,19 @@ class _ImageNetBaseReader(_Reader):
         return self._entries
 
     def get_class_id(self, index: int) -> Optional[str]:
+        """
+        Get WordNet class ID for a sample by index.
+
+        Parameters
+        ----------
+        index : int
+            Sample index.
+
+        Returns
+        -------
+        str or None
+            WordNet class ID, or None for the test split.
+        """
         entries = self._get_entries()
         class_id = entries[index]["class_id"]
         return None if self.split == _Split.TEST else str(class_id)
@@ -122,7 +210,22 @@ class _ImageNetBaseReader(_Reader):
 
 
 class _ImageNetDataReader(_ImageNetBaseReader):
-    def __getitem__(self, index: int):
+    """Reader for loading RGB PIL images from ImageNet disk storage."""
+
+    def __getitem__(self, index: int) -> Image.Image:
+        """
+        Load and return the image at the specified index.
+
+        Parameters
+        ----------
+        index : int
+            Index of the sample to read.
+
+        Returns
+        -------
+        PIL.Image.Image
+            RGB PIL Image.
+        """
         try:
             entries = self._get_entries()
             actual_index = entries[index]["actual_index"]
@@ -141,7 +244,22 @@ class _ImageNetDataReader(_ImageNetBaseReader):
 
 
 class _ImageNetTargetReader(_ImageNetBaseReader):
-    def __getitem__(self, index: int):
+    """Reader for loading target class integer indices from ImageNet entries."""
+
+    def __getitem__(self, index: int) -> Optional[int]:
+        """
+        Load and return the integer class target at the specified index.
+
+        Parameters
+        ----------
+        index : int
+            Index of the sample.
+
+        Returns
+        -------
+        int or None
+            Integer class target, or None for the test split.
+        """
         entries = self._get_entries()
         class_index = entries[index]["class_index"]
         return None if self.split == _Split.TEST else int(class_index)

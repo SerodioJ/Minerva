@@ -62,6 +62,35 @@ from minerva.utils.instantiators import instantiate_cls
 
 @dataclass
 class LossConfig:
+    """
+    Loss weights and hyperparameter configuration for DINO, KoLeo, and iBOT objectives.
+
+    Parameters
+    ----------
+    dino_loss_weight : float, default 1.0
+        Global multiplier for DINO cross-entropy loss.
+    local_loss_weight_schedule : dict, optional
+        Schedule configuration for local crops loss reweighting.
+    reweight_dino_local_loss : bool, default False
+        Whether to apply scheduled dynamic reweighting to local crop loss.
+    koleo_loss_distributed : bool, default False
+        Whether to compute KoLeo regularizer across distributed worker ranks.
+    koleo_loss_weight : float, default 0.1
+        Weight multiplier for KoLeo entropy regularization loss.
+    koleo_loss_topk : int, default 1
+        Top-k nearest neighbors for KoLeo distance calculation.
+    koleo_distributed_loss_group_size : int, optional
+        Process group size for distributed KoLeo communication.
+    ibot_loss_weight : float, default 1.0
+        Weight multiplier for iBOT masked patch reconstruction loss.
+    ibot_mask_sample_probability : float, default 0.5
+        Probability of applying masking to a global crop.
+    ibot_mask_random_circular_shift : bool, default False
+        Whether to apply random circular shifts to generated patch masks.
+    ibot_mask_ratio_min_max : tuple of (float, float), default (0.1, 0.5)
+        Minimum and maximum masking ratio boundaries.
+    """
+
     # Dino loss
     dino_loss_weight: float = 1.0
     local_loss_weight_schedule: Optional[Dict[str, int]] = None
@@ -80,6 +109,57 @@ class LossConfig:
 
 @dataclass
 class GramConfig:
+    """
+    Configuration for Gram matrix feature representation loss and teacher distillation.
+
+    Parameters
+    ----------
+    backbone : nn.Module, optional
+        Separate backbone architecture for Gram feature extraction.
+    use_loss : bool, default False
+        Whether to enable Gram representation loss.
+    normalized : bool, default True
+        Whether to L2-normalize patch representations before Gram computation.
+    remove_neg : bool, default False
+        Whether to clip negative similarity values in Gram matrices.
+    remove_only_teacher_neg : bool, default False
+        Whether to clip only negative similarity entries in teacher Gram matrices.
+    loss_weight : float, optional
+        Static loss multiplier for Gram loss.
+    ema_teacher : bool, default False
+        Whether to use the EMA teacher backbone as the Gram target teacher.
+    ckpt : Path, optional
+        Path to pretrained checkpoint for standalone Gram teacher.
+    img_level : bool, default False
+        Whether to compute Gram similarity across images rather than tokens.
+    tokens_used : {"all", "masked", "unmasked"}, default "all"
+        Which subset of patch tokens to include in Gram computation.
+    rep_update : bool, default True
+        Whether to periodically update Gram teacher representations.
+    update_frequency : int, default 50000
+        Iteration interval for updating Gram teacher weights.
+    it_first_update : int, default 0
+        First iteration at which Gram teacher updates start.
+    max_updates : int, optional
+        Maximum number of Gram teacher weight updates allowed.
+    num_updates : int, default 0
+        Counter tracking total completed Gram teacher updates.
+    it_load_ema_teacher : int, default -1
+        Iteration step at which to clone EMA teacher weights into Gram teacher.
+    compute_stats : bool, default False
+        Whether to record masked and unmasked Gram similarity statistics.
+    global_teacher_resize_method : {"bicubic"}, default "bicubic"
+        Interpolation mode for resizing Gram teacher feature grids.
+    loss_weight_schedule : dict, optional
+        Dynamic schedule parameters for Gram loss weight.
+    global_teacher_resize_antialias : bool, default False
+        Whether to apply antialiasing during Gram teacher feature map interpolation.
+    teacher_crops_size : int, optional
+        Pixel resolution for dedicated Gram teacher crops.
+    teacher_no_distortions : bool, default False
+        Whether to omit photometric distortions for Gram teacher crops.
+    """
+
     backbone: Optional[nn.Module] = None
     use_loss: bool = False
     normalized: bool = True
@@ -106,6 +186,35 @@ class GramConfig:
 
 @dataclass
 class AugmentationConfig:
+    """
+    Multi-crop data augmentation parameters for DINO self-supervised training.
+
+    Parameters
+    ----------
+    global_crops_scale : tuple of (float, float), default (0.32, 1.0)
+        Scale range for global image crops.
+    local_crops_scale : tuple of (float, float), default (0.05, 0.32)
+        Scale range for local image crops.
+    local_crops_number : int, default 8
+        Number of small local crops generated per sample.
+    global_crops_size : int, default 224
+        Pixel resolution for square global crops.
+    local_crops_size : int, default 96
+        Pixel resolution for square local crops.
+    localcrops_subset_of_globalcrops : bool, default False
+        Whether to crop local views as sub-regions of global crops.
+    share_color_jitter : bool, default False
+        Whether to share identical color jitter transform parameters across crops.
+    horizontal_flips : bool, default True
+        Whether to apply random horizontal flips.
+    rgb_mean : tuple of (float, float, float), default (0.485, 0.456, 0.406)
+        Image channel normalization means.
+    rgb_std : tuple of (float, float, float), default (0.229, 0.224, 0.225)
+        Image channel normalization standard deviations.
+    teacher_to_student_resolution_scale : float, default 1.0
+        Ratio of teacher image input resolution to student image resolution.
+    """
+
     global_crops_scale: Tuple[float, float] = (0.32, 1.0)
     local_crops_scale: Tuple[float, float] = (0.05, 0.32)
     local_crops_number: int = 8
@@ -121,6 +230,53 @@ class AugmentationConfig:
 
 @dataclass
 class OptimConfig:
+    """
+    Optimizer, learning rate scheduling, and weight decay hyperparameter configuration.
+
+    Parameters
+    ----------
+    clip_grad : float, default 3.0
+        Maximum gradient norm for gradient clipping.
+    scaling_rule : str, default "sqrt_wrt_1024"
+        Base learning rate scaling rule ("sqrt_wrt_1024", "linear_wrt_256").
+    patch_embed_lr_mult : float, default 0.2
+        Learning rate multiplier for patch embedding layer.
+    dino_head_wd_multiplier : float, default 1.0
+        Weight decay multiplier for DINO projection heads.
+    layerwise_decay : float, default 0.9
+        Layer-wise learning rate decay rate for transformer blocks.
+    multi_tensor_optim : bool, default True
+        Whether to fuse and vectorize AdamW parameter updates with multi-tensor ops.
+    adamw_beta1 : float, default 0.9
+        AdamW beta1 coefficient.
+    adamw_beta2 : float, default 0.999
+        AdamW beta2 coefficient.
+    min_lr : float, default 1.0e-06
+        Final minimum learning rate.
+    warmup_epochs : int, default 10
+        Number of epochs for linear learning rate warmup.
+    weight_decay : float, default 0.04
+        Initial weight decay value.
+    weight_decay_end : float, default 0.4
+        Final weight decay value.
+    momentum_teacher : float, default 0.992
+        Initial exponential moving average (EMA) momentum for teacher network.
+    final_momentum_teacher : float, default 1.0
+        Final EMA momentum for teacher network.
+    teacher_temp : float, default 0.07
+        Final softmax temperature for teacher outputs.
+    warmup_teacher_temp_epochs : int, default 30
+        Number of epochs for teacher temperature warmup.
+    warmup_teacher_temp : float, default 0.04
+        Initial teacher temperature value.
+    schedule_trunc_extra : float, default 0.0
+        Cosine decay truncation parameter.
+    freeze_last_layer_epochs : int, default 1
+        Number of epochs to freeze gradients of the final projection layer.
+    freeze_backbone_epochs : int, default 0
+        Number of initial epochs to keep the student backbone frozen.
+    """
+
     clip_grad: float = 3.0
     scaling_rule: str = "sqrt_wrt_1024"
     patch_embed_lr_mult: float = 0.2
@@ -146,6 +302,31 @@ class OptimConfig:
 
 @dataclass
 class MiscConfig:
+    """
+    Miscellaneous training optimizations, distributed execution, and precision settings.
+
+    Parameters
+    ----------
+    global_ignore_diagonal : bool, default True
+        Whether to exclude identical crop comparisons in global DINO loss.
+    distillation_enabled : bool, default False
+        Whether distillation from an external teacher is enabled.
+    multidistillation_enabled : bool, default False
+        Whether multi-teacher distillation is enabled.
+    train_checkpointing : bool, default False
+        Whether to enable activation checkpointing during training.
+    train_compile : bool, default True
+        Whether to enable torch.compile optimization.
+    checkpointing_full : bool, default False
+        Whether activation checkpointing wraps full modules or selective ops.
+    use_cuda_graphs : bool, default False
+        Whether to enable Triton CUDA graphs during compilation.
+    param_dtype : {"fp16", "bf16", "fp32"}, default "bf16"
+        Data type for model parameters in FSDP.
+    reduce_dtype : {"fp16", "bf16", "fp32"}, default "fp32"
+        Data type for distributed gradient reduction.
+    """
+
     global_ignore_diagonal: bool = True
     distillation_enabled: bool = False
     multidistillation_enabled: bool = False
@@ -159,6 +340,8 @@ class MiscConfig:
 
 @dataclass
 class Schedules:
+    """Container holding active step-level training schedules for LR, WD, EMA, temperature, and loss weights."""
+
     lr: Optional[Any] = None
     wd: Optional[Any] = None
     momentum: Optional[Any] = None
@@ -172,6 +355,21 @@ Config = Union[LossConfig, GramConfig, OptimConfig, MiscConfig]
 
 
 def init_config(config: Config, init: Optional[Union[Config, Dict[str, Any]]]):
+    """
+    Instantiate or return a typed dataclass configuration object from dictionary or existing instance.
+
+    Parameters
+    ----------
+    config : type of Config
+        Dataclass type to instantiate.
+    init : Config or dict, optional
+        Configuration instance or keyword dictionary.
+
+    Returns
+    -------
+    Config
+        Instantiated configuration dataclass.
+    """
     if init is None:
         return config()
     if isinstance(init, dict):
@@ -180,6 +378,47 @@ def init_config(config: Config, init: Optional[Union[Config, Dict[str, Any]]]):
 
 
 class _DINO(_SSLTechnique):
+    """
+    Base LightningModule class implementing DINO self-supervised learning with teacher EMA, iBOT, and Gram objectives.
+
+    Parameters
+    ----------
+    backbone : nn.Module
+        Student feature extractor neural network.
+    learning_rate : float
+        Base learning rate.
+    dino_version : {2, 3}
+        Target DINO framework version formulation.
+    batch_size : int
+        Per-GPU batch size.
+    epochs : int
+        Total training epochs.
+    iter_per_epoch : int
+        Number of optimization iterations per epoch.
+    prediction_head : DINOHead or nn.Module
+        Student projection head.
+    ibot_separate_head : bool, default False
+        Whether to use a distinct projection head for iBOT patch loss.
+    ibot_head : DINOHead or nn.Module, optional
+        Separate projection head for iBOT patches.
+    teacher_backbone : nn.Module, optional
+        Teacher backbone architecture (cloned from student if omitted).
+    teacher_prediction_head : DINOHead or nn.Module, optional
+        Teacher projection head (cloned from student if omitted).
+    centering : {"sinkhorn_knopp", "centering"}, default "sinkhorn_knopp"
+        Probability normalization method for teacher output features.
+    loss : LossConfig or dict, optional
+        Loss configuration.
+    gram : GramConfig or dict, optional
+        Gram loss configuration.
+    crops : AugmentationConfig or dict, optional
+        Data augmentation configuration.
+    optim : OptimConfig or dict, optional
+        Optimizer configuration.
+    misc : MiscConfig or dict, optional
+        Miscellaneous optimization and precision configuration.
+    """
+
     def __init__(
         self,
         # standard SSL API
@@ -397,6 +636,7 @@ class _DINO(_SSLTechnique):
                 )
 
     def build_schedulers(self):
+        """Build CosineScheduler schedules for learning rate, weight decay, teacher EMA momentum, and temperatures."""
         lr = dict(
             base_value=self.learning_rate,
             final_value=self.optim.min_lr,
@@ -445,6 +685,7 @@ class _DINO(_SSLTechnique):
         self.schedules.last_layer_lr = last_layer_lr_schedule
 
     def configure_model(self):
+        """Configure distributed sharding (FSDP/DDP), activation checkpointing, compilation, and LR scaling."""
         self.to_empty(device=self.device)
         self.init_weights()
         inference_only_models = [self.model_ema]
@@ -508,6 +749,21 @@ class _DINO(_SSLTechnique):
         self.build_schedulers()
 
     def training_step(self, batch, batch_idx):
+        """
+        Execute single manual optimization step including schedule updates, backward pass, and EMA update.
+
+        Parameters
+        ----------
+        batch : dict
+            Collated training batch from `collate_data_and_cast`.
+        batch_idx : int
+            Index of current training batch.
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar total training loss.
+        """
         step = self.global_step
         opt = self.optimizers()
 
@@ -585,11 +841,13 @@ class _DINO(_SSLTechnique):
         return loss
 
     def ddp_strategy(self):
+        """Configure DDP distributed strategy."""
         raise NotImplementedError(
             "DDP strategy is not implemented yet. Please use FSDP strategy."
         )
 
     def fsdp_strategy(self):
+        """Configure PyTorch FSDP2 distributed sharding for student, EMA teacher, and Gram teacher networks."""
         print("Lightning is using FSDP2!")
         inference_only_models = [self.model_ema]
         if self.has_gram_teacher:
@@ -639,6 +897,7 @@ class _DINO(_SSLTechnique):
                 fsdp_state._fsdp_param_group.post_forward_mesh_info = mi
 
     def init_weights(self) -> None:
+        """Initialize student parameters, projection heads, losses, and sync weights to teacher EMA."""
         # All weights are set to `nan` to ensure we initialize everything explicitly
         self.student.backbone.init_weights()
         self.student.dino_head.init_weights()
@@ -654,7 +913,8 @@ class _DINO(_SSLTechnique):
         # if self.misc.distillation_enabled:
         #     self.teacher.load_state_dict(self.student.state_dict())
 
-    def update_ema(self, m):
+    def update_ema(self, m: float):
+        """Update teacher network parameters via Exponential Moving Average (EMA)."""
         if self.ema_params_lists is None:
             student_param_list = []
             teacher_param_list = []
@@ -671,7 +931,8 @@ class _DINO(_SSLTechnique):
             torch._foreach_mul_(teacher_param_list, m)
             torch._foreach_add_(teacher_param_list, student_param_list, alpha=1 - m)
 
-    def update_gram(self, m=0):
+    def update_gram(self, m: float = 0):
+        """Update Gram teacher network parameters."""
         if not self.has_gram_teacher:
             return
         if self.gram_params_lists is None:
@@ -692,6 +953,7 @@ class _DINO(_SSLTechnique):
             torch._foreach_add_(gramteacher_param_list, teacher_param_list, alpha=1 - m)
 
     def get_maybe_fused_params_for_submodel(self, m: nn.Module):
+        """Build parameter groups with layerwise decay and optional multi-tensor fusion."""
         params_groups = get_params_groups_with_decay_fsdp(
             model=m,
             lr_decay_rate=self.optim.layerwise_decay,
@@ -710,6 +972,7 @@ class _DINO(_SSLTechnique):
             return params_groups
 
     def get_params_groups(self):
+        """Retrieve optimizer parameter groups across all student submodules."""
         all_params_groups = []
         for name, m in self.student.items():
             # logger.info(f"Getting paramer groups for {name}")
@@ -717,6 +980,7 @@ class _DINO(_SSLTechnique):
         return all_params_groups
 
     def configure_optimizers(self):
+        """Configure AdamW optimizer for the student network."""
         # Ensure only student params are passed
         return torch.optim.AdamW(
             self.get_params_groups(),
@@ -724,6 +988,7 @@ class _DINO(_SSLTechnique):
         )
 
     def default_technique_transforms(self):
+        """Return default multi-crop DataAugmentationDINO transform callable."""
         return DataAugmentationDINO(
             self.crops.global_crops_scale,
             self.crops.local_crops_scale,
@@ -740,6 +1005,19 @@ class _DINO(_SSLTechnique):
         )
 
     def technique_callbacks(self, logs_dir: Path):
+        """
+        Return technique-specific Lightning callbacks (evaluation checkpointing, weights filtering).
+
+        Parameters
+        ----------
+        logs_dir : Path
+            Logging output root directory.
+
+        Returns
+        -------
+        list of Callback
+            List of configured Lightning callbacks.
+        """
         custom_callbacks = [
             EvalCheckpointCallback(
                 period=self.iter_per_epoch * 10,
@@ -762,6 +1040,7 @@ class _DINO(_SSLTechnique):
         return custom_callbacks
 
     def default_technique_collate_fn(self):
+        """Return default collate and batch-masking function for dataloader."""
         img_size = self.crops.global_crops_size
         patch_size = int(
             self.student.backbone.patch_size
@@ -789,13 +1068,15 @@ class _DINO(_SSLTechnique):
         )
 
     def train(self, mode: bool = True):
+        """Set module training mode while maintaining teacher networks in eval mode."""
         super().train(mode)
         self.teacher.eval()
         if self.has_gram_teacher:
             self.gram_teacher.eval()
         return self
 
-    def default_train_strategy(self, world_size) -> ParallelStrategy:
+    def default_train_strategy(self, world_size: int) -> ParallelStrategy:
+        """Return default ModelParallelStrategy for distributed training."""
         return ModelParallelStrategy(
             data_parallel_size=world_size,
             tensor_parallel_size=1,
@@ -803,6 +1084,43 @@ class _DINO(_SSLTechnique):
 
 
 class DINOv2(_DINO):
+    """
+    LightningModule implementation of DINOv2 self-supervised learning with iBOT and KoLeo objectives.
+
+    Parameters
+    ----------
+    backbone : nn.Module
+        Student feature extractor neural network.
+    learning_rate : float
+        Base learning rate.
+    batch_size : int
+        Per-GPU batch size.
+    epochs : int
+        Total training epochs.
+    iter_per_epoch : int
+        Number of optimization iterations per epoch.
+    prediction_head : DINOHead or nn.Module
+        Student DINO projection head.
+    ibot_separate_head : bool, default False
+        Whether to use an independent projection head for iBOT loss.
+    ibot_head : DINOHead or nn.Module, optional
+        Separate projection head for iBOT patches.
+    teacher_backbone : nn.Module, optional
+        Teacher backbone architecture (cloned from student if omitted).
+    teacher_prediction_head : DINOHead or nn.Module, optional
+        Teacher projection head (cloned from student if omitted).
+    centering : {"sinkhorn_knopp", "centering"}, default "sinkhorn_knopp"
+        Probability normalization method for teacher output features.
+    loss : LossConfig or dict, optional
+        Loss configuration.
+    crops : AugmentationConfig or dict, optional
+        Data augmentation configuration.
+    optim : OptimConfig or dict, optional
+        Optimizer configuration.
+    misc : MiscConfig or dict, optional
+        Miscellaneous configuration.
+    """
+
     def __init__(
         self,
         # standard SSL API
@@ -850,13 +1168,38 @@ class DINOv2(_DINO):
     @torch.no_grad()
     def get_teacher_output(
         self,
-        images,
-        n_images,
-        upperbound,
-        mask_indices_list,
-        teacher_temp,
-        n_masked_patches_tensor,
-    ):
+        images: Tensor,
+        n_images: int,
+        upperbound: int,
+        mask_indices_list: Tensor,
+        teacher_temp: float,
+        n_masked_patches_tensor: Tensor,
+    ) -> Tuple[Tensor, Optional[Tensor]]:
+        """
+        Forward teacher network on global views and compute centered softmax target probabilities.
+
+        Parameters
+        ----------
+        images : Tensor
+            Flattened global crop images of shape `(n_images * B, C, H, W)`.
+        n_images : int
+            Number of global crops (typically 2).
+        upperbound : int
+            Upper bound capacity for patch token buffer.
+        mask_indices_list : Tensor
+            Flat indices of masked patches across all global crops.
+        teacher_temp : float
+            Softmax temperature for teacher probabilities.
+        n_masked_patches_tensor : Tensor
+            Tensor recording the total number of masked patches.
+
+        Returns
+        -------
+        teacher_dino_softmaxed_centered_list : Tensor
+            Centered and sharpened teacher DINO probabilities.
+        masked_teacher_ibot_softmaxed_centered : Tensor, optional
+            Centered and sharpened teacher iBOT patch probabilities.
+        """
         n_masked_patches = mask_indices_list.shape[0]
         x, n_global_crops_teacher = images, n_images
         teacher_backbone_output_dict = self.teacher.backbone(x, is_training=True)
@@ -956,7 +1299,26 @@ class DINOv2(_DINO):
             masked_teacher_ibot_softmaxed_centered,
         )
 
-    def forward(self, data, teacher_temp, **kwargs):
+    def forward(
+        self, data: Dict[str, Any], teacher_temp: float, **kwargs
+    ) -> Tuple[Tensor, Dict[str, Tensor]]:
+        """
+        Compute DINOv2 forward pass, evaluating DINO, iBOT, and KoLeo losses across multi-crop views.
+
+        Parameters
+        ----------
+        data : dict
+            Batch dictionary with collated crops, masks, and indexing metadata.
+        teacher_temp : float
+            Current softmax temperature for teacher distribution sharpening.
+
+        Returns
+        -------
+        loss_accumulator : Tensor
+            Scalar weighted loss for backpropagation.
+        loss_dict : dict of str to Tensor
+            Dictionary of individual loss term values for logging.
+        """
         n_global_crops = 2
         assert n_global_crops == 2
         n_local_crops = self.crops.local_crops_number
@@ -1126,6 +1488,45 @@ class DINOv2(_DINO):
 
 
 class DINOv3(_DINO):
+    """
+    LightningModule implementation of DINOv3 self-supervised learning with Gram matrix feature distillation.
+
+    Parameters
+    ----------
+    backbone : nn.Module
+        Student feature extractor neural network.
+    learning_rate : float
+        Base learning rate.
+    batch_size : int
+        Per-GPU batch size.
+    epochs : int
+        Total training epochs.
+    iter_per_epoch : int
+        Number of optimization iterations per epoch.
+    prediction_head : DINOHead or nn.Module
+        Student DINO projection head.
+    ibot_separate_head : bool, default True
+        Whether to use an independent projection head for iBOT loss (must be True for DINOv3).
+    ibot_head : DINOHead or nn.Module, optional
+        Separate projection head for iBOT patches.
+    teacher_backbone : nn.Module, optional
+        Teacher backbone architecture (cloned from student if omitted).
+    teacher_prediction_head : DINOHead or nn.Module, optional
+        Teacher projection head (cloned from student if omitted).
+    centering : {"sinkhorn_knopp"}, default "sinkhorn_knopp"
+        Probability normalization method for teacher output features.
+    loss : LossConfig or dict, optional
+        Loss configuration.
+    gram : GramConfig or dict, optional
+        Gram loss configuration.
+    crops : AugmentationConfig or dict, optional
+        Data augmentation configuration.
+    optim : OptimConfig or dict, optional
+        Optimizer configuration.
+    misc : MiscConfig or dict, optional
+        Miscellaneous configuration.
+    """
+
     def __init__(
         self,
         # standard SSL API
@@ -1164,10 +1565,29 @@ class DINOv3(_DINO):
 
     def forward(
         self,
-        data,
-        teacher_temp,
-        iteration=0,
-    ) -> tuple[Tensor, dict[str, float | Tensor]]:
+        data: Dict[str, Any],
+        teacher_temp: float,
+        iteration: int = 0,
+    ) -> Tuple[Tensor, Dict[str, Union[float, Tensor]]]:
+        """
+        Compute DINOv3 forward pass across global, local, and optional Gram teacher views.
+
+        Parameters
+        ----------
+        data : dict
+            Collated batch dictionary with views, masks, and index metadata.
+        teacher_temp : float
+            Softmax temperature for teacher probability centering.
+        iteration : int, default 0
+            Current optimization iteration step.
+
+        Returns
+        -------
+        loss : Tensor
+            Scalar weighted loss for backpropagation.
+        loss_dict : dict of str to (float or Tensor)
+            Individual loss components and tracking statistics.
+        """
         # del ignored_kwargs
         # metrics_dict = {}
         # print(type(data))
@@ -1261,12 +1681,33 @@ class DINOv3(_DINO):
     @torch.no_grad()
     def get_teacher_output(
         self,
-        images,
-        upperbound,
-        mask_indices_list,
-        teacher_temp,
-        n_masked_patches_tensor,
-    ):
+        images: Tensor,
+        upperbound: int,
+        mask_indices_list: Tensor,
+        teacher_temp: float,
+        n_masked_patches_tensor: Tensor,
+    ) -> Dict[str, Tensor]:
+        """
+        Forward teacher network on unflattened global crops and compute Sinkhorn-Knopp targets.
+
+        Parameters
+        ----------
+        images : Tensor
+            Teacher crop images of shape `(n_crops, B, C, H, W)`.
+        upperbound : int
+            Upper bound capacity for token buffering.
+        mask_indices_list : Tensor
+            Indices of student-masked patches.
+        teacher_temp : float
+            Temperature for Sinkhorn-Knopp normalization.
+        n_masked_patches_tensor : Tensor
+            Tensor of masked patch count.
+
+        Returns
+        -------
+        dict of str to Tensor
+            Dictionary containing CLS, register, and patch embeddings before and after projection and centering.
+        """
         n_crops, B, rgb, H, W = images.shape
         images = images.flatten(0, 1)
 
@@ -1310,8 +1751,34 @@ class DINOv3(_DINO):
         }
 
     def get_gram_teacher_output(
-        self, images, masks, teacher_global, student_global, student_global_crops_size
-    ):
+        self,
+        images: Optional[Tensor],
+        masks: Tensor,
+        teacher_global: Dict[str, Tensor],
+        student_global: Dict[str, Tensor],
+        student_global_crops_size: int,
+    ) -> Dict[str, Tensor]:
+        """
+        Extract Gram representation targets from standalone Gram teacher or EMA teacher backbone.
+
+        Parameters
+        ----------
+        images : Tensor, optional
+            Dedicated Gram teacher crops of shape `(n_crops, B, C, H, W)`.
+        masks : Tensor
+            Boolean mask tensor indicating student-masked patch locations.
+        teacher_global : dict of str to Tensor
+            Outputs from the standard EMA teacher network.
+        student_global : dict of str to Tensor
+            Outputs from the student network on global crops.
+        student_global_crops_size : int
+            Pixel resolution of student global crops.
+
+        Returns
+        -------
+        dict of str to Tensor
+            Dictionary containing student and teacher patch feature tensors for Gram loss computation.
+        """
         # Get student patch features
         student_patches = student_global["patch_pre_head"].flatten(
             0, 1
@@ -1378,8 +1845,37 @@ class DINOv3(_DINO):
         }
 
     def get_student_output(
-        self, *, global_crops, local_crops, upperbound, masks, mask_indices_list
-    ):
+        self,
+        *,
+        global_crops: Tensor,
+        local_crops: Tensor,
+        upperbound: int,
+        masks: Tensor,
+        mask_indices_list: Tensor,
+    ) -> Tuple[Dict[str, Tensor], Dict[str, Tensor]]:
+        """
+        Forward global and local crops jointly through student backbone and projection heads.
+
+        Parameters
+        ----------
+        global_crops : Tensor
+            Global crop images of shape `(n_global_crops, B, C, H, W)`.
+        local_crops : Tensor
+            Local crop images of shape `(n_local_crops, B, C, H, W)`.
+        upperbound : int
+            Upper bound capacity for patch token buffer.
+        masks : Tensor
+            Boolean mask tensor for student global crops.
+        mask_indices_list : Tensor
+            Indices of masked patches.
+
+        Returns
+        -------
+        global_out : dict of str to Tensor
+            Student outputs on global crops (CLS, storage tokens, masked patch tokens).
+        local_out : dict of str to Tensor
+            Student outputs on local crops.
+        """
         n_global_crops, B, rgb, H, W = global_crops.shape
         n_local_crops, B, rgb, H, W = local_crops.shape
 
@@ -1455,15 +1951,44 @@ class DINOv3(_DINO):
 
     def compute_losses(
         self,
-        teacher_global,
-        student_global,
-        student_local,
-        gram_global,
-        masks,
-        mask_indices_list,
-        masks_weight,
-        iteration,
-    ):
+        teacher_global: Dict[str, Tensor],
+        student_global: Dict[str, Tensor],
+        student_local: Dict[str, Tensor],
+        gram_global: Dict[str, Tensor],
+        masks: Tensor,
+        mask_indices_list: Tensor,
+        masks_weight: Tensor,
+        iteration: int,
+    ) -> Tuple[Tensor, Dict[str, Union[float, Tensor]]]:
+        """
+        Calculate total weighted self-supervised loss combining DINO, KoLeo, iBOT, and Gram objectives.
+
+        Parameters
+        ----------
+        teacher_global : dict of str to Tensor
+            Teacher network features and centered target distributions.
+        student_global : dict of str to Tensor
+            Student network representations on global crops.
+        student_local : dict of str to Tensor
+            Student network representations on local crops.
+        gram_global : dict of str to Tensor
+            Extracted patch features for Gram representation alignment.
+        masks : Tensor
+            Flat student mask tensor across global crops.
+        mask_indices_list : Tensor
+            Indices of masked patches.
+        masks_weight : Tensor
+            Inverse frequency weights per mask.
+        iteration : int
+            Current global optimization step.
+
+        Returns
+        -------
+        loss_accumulator : Tensor
+            Total combined scalar loss for backpropagation.
+        loss_dict : dict of str to (float or Tensor)
+            Dictionary of named individual loss components and statistics.
+        """
         # print(student_local["cls_after_head"].dtype)
         # print(teacher_global["cls_centered"].dtype)
         n_global_crops = student_global["cls_after_head"].shape[0]
@@ -1571,6 +2096,7 @@ class DINOv3(_DINO):
 
     @torch.no_grad()
     def gram_load_ema_teacher(self):
+        """Clone EMA teacher backbone weights into the standalone Gram teacher network."""
         if self.has_gram_teacher:
             skip_load_prefixes = ["dino_head.", "ibot_head."]
             self.gram_teacher.load_state_dict(
@@ -1587,15 +2113,44 @@ class DINOv3(_DINO):
 
 def collate_data_and_cast(
     samples_list,
-    mask_ratio_tuple,
-    mask_probability,
-    dtype,
-    n_tokens=None,
-    mask_generator=None,
-    random_circular_shift=False,
-    local_batch_size=None,
-    dino_version=3,
-):
+    mask_ratio_tuple: Tuple[float, float],
+    mask_probability: float,
+    dtype: torch.dtype,
+    n_tokens: Optional[int] = None,
+    mask_generator: Optional[MaskingGenerator] = None,
+    random_circular_shift: bool = False,
+    local_batch_size: Optional[int] = None,
+    dino_version: int = 3,
+) -> Dict[str, Any]:
+    """
+    Collate multi-crop samples, generate random patch masks for iBOT, and cast tensors to precision.
+
+    Parameters
+    ----------
+    samples_list : list
+        List of data sample dictionaries loaded by dataset workers.
+    mask_ratio_tuple : tuple of (float, float)
+        Range (min, max) of masking ratios.
+    mask_probability : float
+        Probability of applying masking to a given crop.
+    dtype : torch.dtype
+        Target floating point tensor data type.
+    n_tokens : int, optional
+        Total number of patch tokens per crop image.
+    mask_generator : MaskingGenerator, optional
+        Mask generator instance creating block/patch boolean masks.
+    random_circular_shift : bool, default False
+        Whether to apply random circular spatial rolls to masks.
+    local_batch_size : int, optional
+        Batch size per worker rank.
+    dino_version : int, default 3
+        Target DINO framework version (2 or 3).
+
+    Returns
+    -------
+    dict
+        Collated batch dictionary containing stacked global/local/Gram crops, masks, and indices.
+    """
     n_global_crops = len(samples_list[0][0]["global_crops"])
     n_local_crops = len(samples_list[0][0]["local_crops"])
 
@@ -1675,7 +2230,23 @@ def collate_data_and_cast(
 
 
 # ------------ Auxiliary functions for learning rate schedules and parameter groups ------------ #
-def apply_optim_scheduler(optimizer, lr, wd, last_layer_lr):
+def apply_optim_scheduler(
+    optimizer: torch.optim.Optimizer, lr: float, wd: float, last_layer_lr: float
+) -> None:
+    """
+    Apply current step learning rate and weight decay values across optimizer parameter groups.
+
+    Parameters
+    ----------
+    optimizer : torch.optim.Optimizer
+        PyTorch optimizer.
+    lr : float
+        Base learning rate for current step.
+    wd : float
+        Weight decay for current step.
+    last_layer_lr : float
+        Learning rate applied to the last prediction projection layer.
+    """
     for param_group in optimizer.param_groups:
         is_last_layer = param_group["is_last_layer"]
         lr_multiplier = param_group["lr_multiplier"]
@@ -1696,18 +2267,27 @@ def linear_warmup_cosine_decay(
     cosine_iterations: int | None = None,
 ) -> np.ndarray:
     """
-    Create a learning rate schedule with linear warmup, a cosine, and an optional constant part in the end.
+    Create a schedule with linear warmup, cosine decay, and an optional constant end part.
 
-    Args:
-        start (float): Initial learning rate.
-        peak (float): Learning rate after linear warmup.
-        end (float): Final learning rate after cosine.
-        warmup_iterations (int): Number of iterations for linear warmup.
-        total_iterations (int): Total number of iterations for the schedule.
-        cosine_iterations (int | None): Number of iterations for cosine.
-            If None, cosine part will be over remaining iterations after warmup.
-    Returns:
-        np.ndarray: Learning rate schedule as a numpy array.
+    Parameters
+    ----------
+    start : float
+        Initial schedule value.
+    peak : float
+        Peak value achieved at the end of linear warmup.
+    end : float
+        Final value after cosine decay.
+    warmup_iterations : int
+        Number of steps for linear warmup.
+    total_iterations : int
+        Total schedule step count.
+    cosine_iterations : int, optional
+        Number of steps for cosine decay (defaults to total - warmup).
+
+    Returns
+    -------
+    np.ndarray
+        Array containing step-wise schedule values.
     """
     linear = np.linspace(start, peak, warmup_iterations, endpoint=False)
     if cosine_iterations is None:
@@ -1722,20 +2302,32 @@ def linear_warmup_cosine_decay(
 
 
 def get_vit_lr_decay_rate(
-    name,
-    lr_decay_rate=1.0,
-    num_layers=12,
-    force_is_backbone=False,
-    chunked_blocks=False,
-):
+    name: str,
+    lr_decay_rate: float = 1.0,
+    num_layers: int = 12,
+    force_is_backbone: bool = False,
+    chunked_blocks: bool = False,
+) -> float:
     """
-    Calculate lr decay rate for different ViT blocks.
-    Args:
-        name (string): parameter name.
-        lr_decay_rate (float): base lr decay rate.
-        num_layers (int): number of ViT blocks.
-    Returns:
-        lr decay rate for the given parameter.
+    Calculate layer-wise learning rate decay multiplier for Vision Transformer parameters.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name string.
+    lr_decay_rate : float, default 1.0
+        Base decay rate per layer.
+    num_layers : int, default 12
+        Total number of transformer blocks.
+    force_is_backbone : bool, default False
+        Whether to treat parameter as belonging to backbone.
+    chunked_blocks : bool, default False
+        Whether blocks are organized into chunked modules.
+
+    Returns
+    -------
+    float
+        Learning rate multiplier for the specified parameter.
     """
     layer_id = num_layers + 1
     if name.startswith("backbone") or force_is_backbone:
@@ -1766,8 +2358,30 @@ def get_vit_lr_decay_rate(
 
 
 def get_params_groups_with_decay(
-    model, lr_decay_rate=1.0, patch_embed_lr_mult=1.0, dino_head_wd_multiplier=1.0
-):
+    model: nn.Module,
+    lr_decay_rate: float = 1.0,
+    patch_embed_lr_mult: float = 1.0,
+    dino_head_wd_multiplier: float = 1.0,
+) -> list:
+    """
+    Build parameter group dictionaries with layer-wise LR decay and weight decay filtering.
+
+    Parameters
+    ----------
+    model : nn.Module
+        Neural network module.
+    lr_decay_rate : float, default 1.0
+        Layer-wise learning rate decay rate.
+    patch_embed_lr_mult : float, default 1.0
+        Learning rate scaling factor for patch embedding layer.
+    dino_head_wd_multiplier : float, default 1.0
+        Weight decay multiplier for DINO projection head.
+
+    Returns
+    -------
+    list of dict
+        List of parameter group dictionaries.
+    """
     chunked_blocks = False
     if hasattr(model, "n_blocks"):
         # logger.info("chunked fsdp")
@@ -1828,8 +2442,24 @@ def get_params_groups_with_decay(
 
 
 def fuse_params_groups(
-    all_params_groups, keys=("lr_multiplier", "wd_multiplier", "is_last_layer")
+    all_params_groups: list,
+    keys: Tuple[str, ...] = ("lr_multiplier", "wd_multiplier", "is_last_layer"),
 ):
+    """
+    Merge parameter group dictionaries sharing identical hyperparameters for multi-tensor optimization.
+
+    Parameters
+    ----------
+    all_params_groups : list of dict
+        Input list of individual parameter group dictionaries.
+    keys : tuple of str, default ("lr_multiplier", "wd_multiplier", "is_last_layer")
+        Attribute keys to match for group fusion.
+
+    Returns
+    -------
+    dict_values
+        Fused parameter groups.
+    """
     fused_params_groups = defaultdict(lambda: {"params": []})
     for d in all_params_groups:
         identifier = ""
@@ -1844,8 +2474,30 @@ def fuse_params_groups(
 
 
 def get_params_groups_with_decay_fsdp(
-    model, lr_decay_rate=1.0, patch_embed_lr_mult=1.0, dino_head_wd_multiplier=1.0
-):
+    model: nn.Module,
+    lr_decay_rate: float = 1.0,
+    patch_embed_lr_mult: float = 1.0,
+    dino_head_wd_multiplier: float = 1.0,
+) -> list:
+    """
+    Construct optimizer parameter groups with layer-wise decay for FSDP-wrapped modules.
+
+    Parameters
+    ----------
+    model : nn.Module
+        FSDP-wrapped module.
+    lr_decay_rate : float, default 1.0
+        Layer-wise learning rate decay factor.
+    patch_embed_lr_mult : float, default 1.0
+        Patch embedding learning rate multiplier.
+    dino_head_wd_multiplier : float, default 1.0
+        DINO head weight decay multiplier.
+
+    Returns
+    -------
+    list of dict
+        Parameter groups with decay metadata.
+    """
     if hasattr(model, "module"):  # SimpleFSDP
         is_backbone = hasattr(model.module, "blocks")
         n_blocks = len(model.module.blocks) if is_backbone else 0
@@ -1898,7 +2550,20 @@ def get_params_groups_with_decay_fsdp(
     return all_param_groups
 
 
-def remove_fsdp_compile_names(name: str):
+def remove_fsdp_compile_names(name: str) -> str:
+    """
+    Strip wrapper prefixes introduced by FSDP, activation checkpointing, and torch.compile.
+
+    Parameters
+    ----------
+    name : str
+        Parameter name string.
+
+    Returns
+    -------
+    str
+        Cleaned parameter name.
+    """
     name = name.replace("_fsdp_wrapped_module.", "")  # Added by FSDP
     name = name.replace(
         "_checkpoint_wrapped_module.", ""
@@ -1911,15 +2576,36 @@ def remove_fsdp_compile_names(name: str):
 
 
 class CosineScheduler:
+    """
+    Cosine learning rate and hyperparameter decay schedule with optional warmup and truncation.
+
+    Parameters
+    ----------
+    base_value : float
+        Initial value after warmup.
+    final_value : float
+        Target value at the end of the cosine schedule.
+    total_iters : int
+        Total number of iterations in the schedule.
+    warmup_iters : int, default 0
+        Number of linear warmup iterations.
+    start_warmup_value : float, default 0.0
+        Starting value at iteration 0 before warmup.
+    freeze_iters : int, default 0
+        Number of iterations to keep the value frozen at 0.
+    trunc_extra : float, default 0.0
+        Truncation factor for modifying cosine decay profile.
+    """
+
     def __init__(
         self,
-        base_value,
-        final_value,
-        total_iters,
-        warmup_iters=0,
-        start_warmup_value=0,
-        freeze_iters=0,
-        trunc_extra=0.0,
+        base_value: float,
+        final_value: float,
+        total_iters: int,
+        warmup_iters: int = 0,
+        start_warmup_value: float = 0,
+        freeze_iters: int = 0,
+        trunc_extra: float = 0.0,
     ):
         super().__init__()
         self.final_value = np.float64(final_value)
@@ -1950,7 +2636,20 @@ class CosineScheduler:
 
         assert len(self.schedule) == self.total_iters
 
-    def __getitem__(self, it):
+    def __getitem__(self, it: int) -> float:
+        """
+        Retrieve scheduled value at iteration `it`.
+
+        Parameters
+        ----------
+        it : int
+            Iteration step index.
+
+        Returns
+        -------
+        float
+            Scheduled value at the given step.
+        """
         if it >= self.total_iters:
             return self.final_value
         else:

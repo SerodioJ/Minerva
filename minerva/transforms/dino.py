@@ -9,7 +9,7 @@
 
 import math
 import random
-from typing import Sequence
+from typing import Sequence, Tuple
 from torchvision.transforms import v2
 
 import numpy as np
@@ -20,6 +20,15 @@ from torch import nn
 class GaussianBlur(v2.RandomApply):
     """
     Apply Gaussian Blur to the PIL image.
+
+    Parameters
+    ----------
+    p : float, default 0.5
+        Probability of applying blur.
+    radius_min : float, default 0.1
+        Minimum Gaussian kernel sigma.
+    radius_max : float, default 2.0
+        Maximum Gaussian kernel sigma.
     """
 
     def __init__(
@@ -40,11 +49,61 @@ def make_normalize_transform(
     mean: Sequence[float] = IMAGENET_DEFAULT_MEAN,
     std: Sequence[float] = IMAGENET_DEFAULT_STD,
 ) -> v2.Normalize:
+    """
+    Create a torchvision v2 Normalize transform with specified mean and std.
+
+    Parameters
+    ----------
+    mean : Sequence[float], default (0.485, 0.456, 0.406)
+        Per-channel sequence of mean values.
+    std : Sequence[float], default (0.229, 0.224, 0.225)
+        Per-channel sequence of standard deviations.
+
+    Returns
+    -------
+    v2.Normalize
+        Configured normalization transform.
+    """
     return v2.Normalize(mean=mean, std=std)
 
 
 # TODO Change this to use new Minerva transforms API once it is available
 class DataAugmentationDINO(object):
+    """
+    Multi-crop data augmentation pipeline for DINO self-supervised learning.
+
+    Parameters
+    ----------
+    global_crops_scale : list of float, default [0.32, 1.0]
+        Scale range for global crops.
+    local_crops_scale : list of float, default [0.05, 0.32]
+        Scale range for local crops.
+    local_crops_number : int, default 8
+        Number of small local crops to extract.
+    global_crops_size : int, default 224
+        Resolution (height and width) of global crops.
+    local_crops_size : int, default 96
+        Resolution (height and width) of local crops.
+    gram_teacher_crops_size : int, optional
+        Resolution for Gram teacher crops, if enabled.
+    gram_teacher_no_distortions : bool, default False
+        If True, Gram teacher crops will not undergo color jittering or distortions.
+    teacher_no_color_jitter : bool, default False
+        If True, teacher views will not receive color distortions.
+    local_crops_subset_of_global_crops : bool, default False
+        If True, extracts local crops as subsets from within global crops.
+    patch_size : int, default 16
+        Patch size used when local crops are extracted as subsets of global crops.
+    share_color_jitter : bool, default False
+        Whether to share identical color jittering across crops.
+    horizontal_flips : bool, default True
+        Whether to apply random horizontal flips.
+    mean : tuple of float, default IMAGENET_DEFAULT_MEAN
+        Normalization RGB mean values.
+    std : tuple of float, default IMAGENET_DEFAULT_STD
+        Normalization RGB standard deviations.
+    """
+
     def __init__(
         self,
         global_crops_scale=[0.32, 1.0],
@@ -209,6 +268,24 @@ class DataAugmentationDINO(object):
             )
 
     def __call__(self, image):
+        """
+        Apply multi-crop augmentations to an input image.
+
+        Parameters
+        ----------
+        image : PIL.Image.Image or torch.Tensor
+            Input raw image.
+
+        Returns
+        -------
+        dict
+            Dictionary containing transformed views:
+            - 'global_crops': list of global crop tensors.
+            - 'global_crops_teacher': list of global crop tensors for the teacher.
+            - 'local_crops': list of local crop tensors.
+            - 'gram_teacher_crops': list of Gram teacher crops (if enabled).
+            - 'offsets': crop offset coordinates.
+        """
         output = {}
         output["weak_flag"] = True  # some residual from mugs
 
@@ -281,6 +358,25 @@ class DataAugmentationDINO(object):
 
 
 class MaskingGenerator:
+    """
+    Block-wise patch masking generator for masked image modeling (e.g. iBOT in DINO).
+
+    Parameters
+    ----------
+    input_size : int or tuple of int
+        Grid dimensions (height, width) in terms of patch count.
+    num_masking_patches : int, optional
+        Target number of patches to mask.
+    min_num_patches : int, default 4
+        Minimum patch area for a single rectangular mask block.
+    max_num_patches : int, optional
+        Maximum patch area for a single rectangular mask block.
+    min_aspect : float, default 0.3
+        Minimum aspect ratio of generated mask blocks.
+    max_aspect : float, optional
+        Maximum aspect ratio of generated mask blocks.
+    """
+
     def __init__(
         self,
         input_size,
@@ -323,10 +419,26 @@ class MaskingGenerator:
         )
         return repr_str
 
-    def get_shape(self):
+    def get_shape(self) -> Tuple[int, int]:
+        """Return the (height, width) grid shape."""
         return self.height, self.width
 
-    def _mask(self, mask, max_mask_patches):
+    def _mask(self, mask: np.ndarray, max_mask_patches: int) -> int:
+        """
+        Attempt to mask a random rectangular block in-place on the mask grid.
+
+        Parameters
+        ----------
+        mask : np.ndarray
+            Boolean mask array.
+        max_mask_patches : int
+            Maximum number of patches allowed to be masked in this step.
+
+        Returns
+        -------
+        int
+            Number of newly masked patches.
+        """
         delta = 0
         for _ in range(10):
             target_area = random.uniform(self.min_num_patches, max_mask_patches)
@@ -350,7 +462,20 @@ class MaskingGenerator:
                     break
         return delta
 
-    def __call__(self, num_masking_patches=0):
+    def __call__(self, num_masking_patches: int = 0) -> np.ndarray:
+        """
+        Generate a boolean mask array with the specified number of masked patches.
+
+        Parameters
+        ----------
+        num_masking_patches : int, default 0
+            Number of patches to mask.
+
+        Returns
+        -------
+        np.ndarray
+            2D boolean mask array of shape (height, width) where True denotes masked.
+        """
         mask = np.zeros(shape=self.get_shape(), dtype=bool)
         mask_count = 0
         while mask_count < num_masking_patches:
@@ -365,7 +490,24 @@ class MaskingGenerator:
 
         return self.complete_mask_randomly(mask, num_masking_patches)
 
-    def complete_mask_randomly(self, mask, num_masking_patches):
+    def complete_mask_randomly(
+        self, mask: np.ndarray, num_masking_patches: int
+    ) -> np.ndarray:
+        """
+        Fill any remaining unmasked patches randomly to reach exact patch target.
+
+        Parameters
+        ----------
+        mask : np.ndarray
+            Current boolean mask.
+        num_masking_patches : int
+            Total target masked patch count.
+
+        Returns
+        -------
+        np.ndarray
+            Completed boolean mask array of shape (height, width).
+        """
         shape = mask.shape
         m2 = mask.flatten()
         to_add = np.random.choice(

@@ -37,6 +37,16 @@ from minerva.models.nets.image.dino import (
 
 
 def init_weights_vit(module: nn.Module, name: str = ""):
+    """
+    Initialize ViT layer parameters (Linear, LayerNorm, LayerScale, PatchEmbed, RMSNorm).
+
+    Parameters
+    ----------
+    module : nn.Module
+        Module to initialize.
+    name : str, default ""
+        Submodule name.
+    """
     if isinstance(module, nn.Linear):
         torch.nn.init.trunc_normal_(module.weight, std=0.02)
         if module.bias is not None:
@@ -56,6 +66,70 @@ def init_weights_vit(module: nn.Module, name: str = ""):
 
 
 class DinoVisionTransformer(nn.Module):
+    """
+    DINOv3 Vision Transformer (ViT) architecture featuring Rotary Position Embeddings (RoPE),
+    optional storage tokens, untied normalization layers, and FP8 support.
+
+    Parameters
+    ----------
+    img_size : int, default 224
+        Input image resolution.
+    patch_size : int, default 16
+        Patch token resolution.
+    in_chans : int, default 3
+        Number of input channels.
+    pos_embed_rope_base : float, default 100.0
+        RoPE base frequency.
+    pos_embed_rope_min_period : float, optional
+        RoPE minimum period for wavelength parameterization.
+    pos_embed_rope_max_period : float, optional
+        RoPE maximum period for wavelength parameterization.
+    pos_embed_rope_normalize_coords : {"min", "max", "separate"}, default "separate"
+        Coordinate normalization method for RoPE.
+    pos_embed_rope_shift_coords : float, optional
+        Random shift coordinate range during training.
+    pos_embed_rope_jitter_coords : float, optional
+        Random jitter coordinate factor during training.
+    pos_embed_rope_rescale_coords : float, optional
+        Random rescale coordinate factor during training.
+    pos_embed_rope_dtype : str, default "bf16"
+        Data type for RoPE trigonometric computation ("fp32", "fp16", "bf16").
+    embed_dim : int, default 768
+        Embedding feature dimension.
+    depth : int, default 12
+        Number of transformer blocks.
+    num_heads : int, default 12
+        Number of attention heads.
+    ffn_ratio : float, default 4.0
+        Hidden feature expansion ratio in FFN layers.
+    qkv_bias : bool, default True
+        Whether QKV projections include bias.
+    drop_path_rate : float, default 0.0
+        Stochastic depth drop rate.
+    layerscale_init : float, optional
+        LayerScale initial diagonal value.
+    norm_layer : str, default "layernorm"
+        Normalization layer type ("layernorm", "layernormbf16", "rmsnorm").
+    ffn_layer : str, default "mlp"
+        Feed-forward layer type ("mlp", "swiglu", "swiglu32", "swiglu64", "swiglu128").
+    ffn_bias : bool, default True
+        Whether FFN linear layers include bias.
+    proj_bias : bool, default True
+        Whether attention projection includes bias.
+    n_storage_tokens : int, default 0
+        Number of extra storage tokens (registers).
+    mask_k_bias : bool, default False
+        Whether to mask out key projection bias in self-attention.
+    untie_cls_and_patch_norms : bool, default False
+        Whether to apply separate normalization layers to CLS/storage tokens vs patch tokens.
+    untie_global_and_local_cls_norm : bool, default False
+        Whether to apply separate normalization to local crop CLS tokens.
+    device : torch.device, optional
+        Target device for tensor allocation.
+    start_from : Path, optional
+        Path to checkpoint to initialize model weights.
+    """
+
     def __init__(
         self,
         *,
@@ -185,6 +259,7 @@ class DinoVisionTransformer(nn.Module):
         self.start_from = start_from
 
     def init_weights(self):
+        """Initialize RoPE embeddings, CLS/storage/mask tokens, and model submodules."""
         self.rope_embed._init_weights()
         nn.init.normal_(self.cls_token, std=0.02)
         if self.n_storage_tokens > 0:
@@ -196,8 +271,23 @@ class DinoVisionTransformer(nn.Module):
             self.load_state_dict(ckpt)
 
     def prepare_tokens_with_masks(
-        self, x: Tensor, masks=None
-    ) -> Tuple[Tensor, Tuple[int]]:
+        self, x: Tensor, masks: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tuple[int, int]]:
+        """
+        Prepare input tokens by applying patch embedding, mask tokens, and prefixing CLS/storage tokens.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input image tensor of shape `(B, C, H, W)`.
+        masks : torch.Tensor, optional
+            Boolean mask tensor of shape `(B, num_patches)`.
+
+        Returns
+        -------
+        tuple of (torch.Tensor, tuple of (int, int))
+            Prepared token sequence and spatial grid dimensions `(H_patches, W_patches)`.
+        """
         x = self.patch_embed(x)
         B, H, W, _ = x.shape
         x = x.flatten(1, 2)
@@ -234,6 +324,21 @@ class DinoVisionTransformer(nn.Module):
     def forward_features_list(
         self, x_list: List[Tensor], masks_list: List[Tensor]
     ) -> List[Dict[str, Tensor]]:
+        """
+        Execute transformer forward pass on list of crops with RoPE and optional untied normalization.
+
+        Parameters
+        ----------
+        x_list : list of torch.Tensor
+            List of image crops.
+        masks_list : list of torch.Tensor
+            List of mask tensors.
+
+        Returns
+        -------
+        list of dict
+            List of feature dictionaries per crop.
+        """
         x = []
         rope = []
         for t_x, t_masks in zip(x_list, masks_list):
@@ -279,6 +384,21 @@ class DinoVisionTransformer(nn.Module):
     def forward_features(
         self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None
     ) -> List[Dict[str, Tensor]]:
+        """
+        Extract token features from a single image tensor or list of crops.
+
+        Parameters
+        ----------
+        x : torch.Tensor or list of torch.Tensor
+            Input images.
+        masks : torch.Tensor, optional
+            Boolean mask tensor.
+
+        Returns
+        -------
+        dict or list of dict
+            Token representations.
+        """
         if isinstance(x, torch.Tensor):
             return self.forward_features_list([x], [masks])[0]
         else:
@@ -316,6 +436,29 @@ class DinoVisionTransformer(nn.Module):
         return_extra_tokens: bool = False,
         norm: bool = True,
     ) -> Tuple[Union[torch.Tensor, Tuple[torch.Tensor, ...]]]:
+        """
+        Extract intermediate transformer block representations.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input image tensor.
+        n : int or sequence of int, default 1
+            Block layers to return.
+        reshape : bool, default False
+            Whether to reshape patch tokens to `(B, H_p, W_p, D)`.
+        return_class_token : bool, default False
+            Whether to return CLS tokens.
+        return_extra_tokens : bool, default False
+            Whether to return extra storage tokens.
+        norm : bool, default True
+            Whether to normalize intermediate representations.
+
+        Returns
+        -------
+        tuple
+            Intermediate features.
+        """
         outputs = self._get_intermediate_layers_not_chunked(x, n)
         if norm:
             outputs_normed = []
@@ -352,6 +495,7 @@ class DinoVisionTransformer(nn.Module):
     def forward(
         self, *args, is_training: bool = False, **kwargs
     ) -> List[Dict[str, Tensor]] | Tensor:
+        """Forward pass returning training feature dictionary or evaluated CLS token."""
         ret = self.forward_features(*args, **kwargs)
         if is_training:
             return ret
@@ -359,11 +503,13 @@ class DinoVisionTransformer(nn.Module):
             return self.head(ret["x_norm_clstoken"])
 
     def activation_checkpoint(self, checkpointing_full: bool = False):
+        """Apply activation checkpointing to transformer blocks."""
         _checkpointing_wrapper = get_activation_checkpoint_wrapper(checkpointing_full)
         for block_id, b in enumerate(self.blocks):
             self.blocks[block_id] = _checkpointing_wrapper(b)
 
     def compile(self, use_cuda_graphs: bool = False):
+        """Compile transformer blocks with torch.compile."""
         assert isinstance(self.blocks, nn.ModuleList)
         for block_id, block in enumerate(self.blocks):
             self.blocks[block_id] = wrap_compile_block(
@@ -371,6 +517,7 @@ class DinoVisionTransformer(nn.Module):
             )
 
     def fsdp(self, fsdp_config: Dict[str, Any]):
+        """Wrap transformer blocks with FSDP."""
         # Backbone - FSDP every block
         blocks = self.blocks
         assert isinstance(blocks, nn.ModuleList)
@@ -389,6 +536,7 @@ class DinoVisionTransformer(nn.Module):
 
 
 def vit_small(patch_size=16, **kwargs):
+    """Construct DINOv3 ViT-Small model (embed_dim=384, depth=12, num_heads=6)."""
     depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -402,6 +550,7 @@ def vit_small(patch_size=16, **kwargs):
 
 
 def vit_base(patch_size=16, **kwargs):
+    """Construct DINOv3 ViT-Base model (embed_dim=768, depth=12, num_heads=12)."""
     depth = kwargs.pop("depth", 12)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -415,6 +564,7 @@ def vit_base(patch_size=16, **kwargs):
 
 
 def vit_large(patch_size=16, **kwargs):
+    """Construct DINOv3 ViT-Large model (embed_dim=1024, depth=24, num_heads=16)."""
     depth = kwargs.pop("depth", 24)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -428,6 +578,7 @@ def vit_large(patch_size=16, **kwargs):
 
 
 def vit_so400m(patch_size=16, **kwargs):
+    """Construct DINOv3 ViT-SO400M model (embed_dim=1152, depth=27, num_heads=18)."""
     depth = kwargs.pop("depth", 27)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -441,6 +592,7 @@ def vit_so400m(patch_size=16, **kwargs):
 
 
 def vit_huge2(patch_size=16, **kwargs):
+    """Construct DINOv3 ViT-Huge model (embed_dim=1280, depth=32, num_heads=20)."""
     depth = kwargs.pop("depth", 32)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -454,9 +606,7 @@ def vit_huge2(patch_size=16, **kwargs):
 
 
 def vit_giant2(patch_size=16, **kwargs):
-    """
-    Close to ViT-giant, with embed-dim 1536 and 24 heads => embed-dim per head 64
-    """
+    """Construct DINOv3 ViT-Giant model (embed_dim=1536, depth=40, num_heads=24)."""
     depth = kwargs.pop("depth", 40)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -470,6 +620,7 @@ def vit_giant2(patch_size=16, **kwargs):
 
 
 def vit_7b(patch_size=16, **kwargs):
+    """Construct DINOv3 ViT-7B model (embed_dim=4096, depth=40, num_heads=32)."""
     depth = kwargs.pop("depth", 40)
     model = DinoVisionTransformer(
         patch_size=patch_size,
@@ -484,6 +635,19 @@ def vit_7b(patch_size=16, **kwargs):
 
 # Layers utils
 def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int]], List[int]]:
+    """
+    Concatenate a list of multi-dimensional tensors along token dimensions while tracking original shapes.
+
+    Parameters
+    ----------
+    x_list : list of torch.Tensor
+        List of tensors to flatten and concatenate.
+
+    Returns
+    -------
+    tuple of (torch.Tensor, list of tuple, list of int)
+        Flattened combined tensor, list of original tensor shapes, and list of token counts.
+    """
     shapes = [x.shape for x in x_list]
     num_tokens = [x.select(dim=-1, index=0).numel() for x in x_list]
     flattened = torch.cat([x.flatten(0, -2) for x in x_list])
@@ -493,6 +657,23 @@ def cat_keep_shapes(x_list: List[Tensor]) -> Tuple[Tensor, List[Tuple[int]], Lis
 def uncat_with_shapes(
     flattened: Tensor, shapes: List[Tuple[int]], num_tokens: List[int]
 ) -> List[Tensor]:
+    """
+    Split and unflatten a concatenated tensor back into original list structure and shapes.
+
+    Parameters
+    ----------
+    flattened : torch.Tensor
+        Combined flattened tensor.
+    shapes : list of tuple
+        Original tensor shapes.
+    num_tokens : list of int
+        Number of tokens per tensor chunk.
+
+    Returns
+    -------
+    list of torch.Tensor
+        List of reshaped tensors.
+    """
     outputs_splitted = torch.split_with_sizes(flattened, num_tokens, dim=0)
     shapes_adjusted = [
         shape[:-1] + torch.Size([flattened.shape[-1]]) for shape in shapes
@@ -510,6 +691,27 @@ def named_apply(
     depth_first: bool = True,
     include_root: bool = False,
 ) -> nn.Module:
+    """
+    Apply function recursively to named submodules.
+
+    Parameters
+    ----------
+    fn : callable
+        Function to execute on each module.
+    module : nn.Module
+        Root module.
+    name : str, default ""
+        Prefix name for submodules.
+    depth_first : bool, default True
+        Whether to recurse depth-first.
+    include_root : bool, default False
+        Whether to apply to root module.
+
+    Returns
+    -------
+    nn.Module
+        Modified root module.
+    """
     if not depth_first and include_root:
         fn(module=module, name=name)
     for child_name, child_module in module.named_children():
@@ -533,6 +735,27 @@ def named_replace(
     depth_first: bool = True,
     include_root: bool = False,
 ) -> nn.Module:
+    """
+    Recursively replace submodules by executing transformation function `fn`.
+
+    Parameters
+    ----------
+    fn : callable
+        Replacement function returning new module.
+    module : nn.Module
+        Root module.
+    name : str, default ""
+        Module name prefix.
+    depth_first : bool, default True
+        Whether to recurse depth-first.
+    include_root : bool, default False
+        Whether to apply transformation to root module.
+
+    Returns
+    -------
+    nn.Module
+        Root module with transformed submodules.
+    """
     if not depth_first and include_root:
         module = fn(module=module, name=name)
     for child_name_o, child_module in list(module.named_children()):
@@ -553,16 +776,41 @@ def named_replace(
 
 # layers.ffn_layers
 class ListForwardMixin(object):
+    """Mixin class providing efficient list-of-tensors batched forward execution."""
+
     def forward(self, x: Tensor):
+        """Standard tensor forward pass."""
         raise NotImplementedError
 
     def forward_list(self, x_list: List[Tensor]) -> List[Tensor]:
+        """Flatten list of tensors, execute forward pass, and reconstruct shapes."""
         x_flat, shapes, num_tokens = cat_keep_shapes(x_list)
         x_flat = self.forward(x_flat)
         return uncat_with_shapes(x_flat, shapes, num_tokens)
 
 
 class Mlp(nn.Module, ListForwardMixin):
+    """
+    Multi-Layer Perceptron (MLP) block supporting standard and list-based forward passes.
+
+    Parameters
+    ----------
+    in_features : int
+        Input feature dimension.
+    hidden_features : int, optional
+        Hidden feature dimension.
+    out_features : int, optional
+        Output feature dimension.
+    act_layer : callable, default nn.GELU
+        Activation constructor.
+    drop : float, default 0.0
+        Dropout probability.
+    bias : bool, default True
+        Whether linear projections include bias.
+    device : torch.device, optional
+        Target device for tensor allocation.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -582,6 +830,7 @@ class Mlp(nn.Module, ListForwardMixin):
         self.drop = nn.Dropout(drop)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through MLP."""
         x = self.fc1(x)
         x = self.act(x)
         x = self.drop(x)
@@ -591,6 +840,29 @@ class Mlp(nn.Module, ListForwardMixin):
 
 
 class SwiGLUFFN(nn.Module, ListForwardMixin):
+    """
+    SwiGLU feed-forward network with channel dimension alignment for FP8 efficiency.
+
+    Parameters
+    ----------
+    in_features : int
+        Input feature dimension.
+    hidden_features : int, optional
+        Target hidden feature dimension.
+    out_features : int, optional
+        Output feature dimension.
+    act_layer : callable, optional
+        Activation function.
+    drop : float, default 0.0
+        Dropout rate.
+    bias : bool, default True
+        Whether linear projections include bias.
+    align_to : int, default 8
+        Alignment factor for hidden dimension rounding.
+    device : torch.device, optional
+        Target allocation device.
+    """
+
     def __init__(
         self,
         in_features: int,
@@ -618,6 +890,7 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         )
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through SwiGLU FFN."""
         x1 = self.w1(x)
         x2 = self.w2(x)
         hidden = F.silu(x1) * x2
@@ -627,6 +900,19 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
 # layers.attentions
 # RoPE-related functions:
 def rope_rotate_half(x: Tensor) -> Tensor:
+    """
+    Rotate the halves of the last dimension for Rotary Position Embedding (RoPE).
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input feature tensor.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor with rotated half-channels `[-x2, x1]`.
+    """
     # x:   [ x0  x1  x2  x3  x4  x5]
     # out: [-x3 -x4 -x5  x0  x1  x2]
     x1, x2 = x.chunk(2, dim=-1)
@@ -634,6 +920,23 @@ def rope_rotate_half(x: Tensor) -> Tensor:
 
 
 def rope_apply(x: Tensor, sin: Tensor, cos: Tensor) -> Tensor:
+    """
+    Apply Rotary Position Embedding (RoPE) rotation to input tensor.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input query or key tensor.
+    sin : torch.Tensor
+        Sine trigonometric components.
+    cos : torch.Tensor
+        Cosine trigonometric components.
+
+    Returns
+    -------
+    torch.Tensor
+        Position-embedded tensor.
+    """
     # x:   [..., D], eg [x0,     x1,   x2,   x3,   x4,   x5]
     # sin: [..., D], eg [sin0, sin1, sin2, sin0, sin1, sin2]
     # cos: [..., D], eg [cos0, cos1, cos2, cos0, cos1, cos2]
@@ -641,6 +944,8 @@ def rope_apply(x: Tensor, sin: Tensor, cos: Tensor) -> Tensor:
 
 
 class LinearKMaskedBias(nn.Linear):
+    """Linear layer with masked key projection bias for selective attention bias."""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         o = self.out_features
@@ -651,6 +956,7 @@ class LinearKMaskedBias(nn.Linear):
             )
 
     def forward(self, input: Tensor) -> Tensor:
+        """Forward pass with masked key bias applied."""
         masked_bias = (
             self.bias * self.bias_mask.to(self.bias.dtype)
             if self.bias is not None
@@ -660,6 +966,29 @@ class LinearKMaskedBias(nn.Linear):
 
 
 class SelfAttention(nn.Module):
+    """
+    Multi-Head Self-Attention with Rotary Position Embedding (RoPE) and list forward support.
+
+    Parameters
+    ----------
+    dim : int
+        Input and output feature dimension.
+    num_heads : int, default 8
+        Number of attention heads.
+    qkv_bias : bool, default False
+        Whether QKV linear projections include bias.
+    proj_bias : bool, default True
+        Whether output projection includes bias.
+    attn_drop : float, default 0.0
+        Attention dropout rate.
+    proj_drop : float, default 0.0
+        Output projection dropout rate.
+    mask_k_bias : bool, default False
+        Whether to mask key projection bias.
+    device : torch.device, optional
+        Target allocation device.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -685,6 +1014,7 @@ class SelfAttention(nn.Module):
     def apply_rope(
         self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]
     ) -> Tuple[Tensor, Tensor]:
+        """Apply RoPE rotation to query and key tensors."""
         # All operations will use the dtype of rope, the output is cast back to the dtype of q and k
         q_dtype = q.dtype
         k_dtype = k.dtype
@@ -706,13 +1036,17 @@ class SelfAttention(nn.Module):
         return q, k
 
     def forward(self, x: Tensor, attn_bias=None, rope: Tensor = None) -> Tensor:
+        """Execute self-attention on a single tensor."""
         qkv = self.qkv(x)
         attn_v = self.compute_attention(qkv=qkv, attn_bias=attn_bias, rope=rope)
         x = self.proj(attn_v)
         x = self.proj_drop(x)
         return x
 
-    def forward_list(self, x_list, attn_bias=None, rope_list=None) -> List[Tensor]:
+    def forward_list(
+        self, x_list: List[Tensor], attn_bias=None, rope_list=None
+    ) -> List[Tensor]:
+        """Execute self-attention on a list of crop tensors with fused linear layers."""
         assert len(x_list) == len(rope_list)  # should be enforced by the Block
         x_flat, shapes, num_tokens = cat_keep_shapes(x_list)
         qkv_flat = self.qkv(x_flat)
@@ -725,6 +1059,7 @@ class SelfAttention(nn.Module):
         return uncat_with_shapes(x_flat, shapes, num_tokens)
 
     def compute_attention(self, qkv: Tensor, attn_bias=None, rope=None) -> Tensor:
+        """Compute scaled dot product attention with optional RoPE."""
         assert attn_bias is None
         B, N, _ = qkv.shape
         C = self.qkv.in_features
@@ -740,6 +1075,25 @@ class SelfAttention(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
+    """
+    Causal multi-head self-attention module.
+
+    Parameters
+    ----------
+    dim : int
+        Feature dimension.
+    num_heads : int, default 8
+        Number of attention heads.
+    qkv_bias : bool, default False
+        Whether QKV projections include bias.
+    proj_bias : bool, default True
+        Whether output projection includes bias.
+    attn_drop : float, default 0.0
+        Attention dropout rate.
+    proj_drop : float, default 0.0
+        Output projection dropout rate.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -766,6 +1120,7 @@ class CausalSelfAttention(nn.Module):
         init_proj_std: float | None = None,
         factor: float = 1.0,
     ) -> None:
+        """Initialize attention weights with normal distributions."""
         init_attn_std = init_attn_std or (self.dim**-0.5)
         init_proj_std = init_proj_std or init_attn_std * factor
         nn.init.normal_(self.qkv.weight, std=init_attn_std)
@@ -776,6 +1131,7 @@ class CausalSelfAttention(nn.Module):
             nn.init.zeros_(self.proj.bias)
 
     def forward(self, x: Tensor, is_causal: bool = True) -> Tensor:
+        """Forward pass with causal mask."""
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads)
         q, k, v = torch.unbind(qkv, 2)
@@ -800,6 +1156,45 @@ torch._dynamo.config.accumulated_cache_size_limit = 1024
 
 
 class SelfAttentionBlock(nn.Module):
+    """
+    Self-Attention transformer block supporting RoPE, LayerScale, stochastic depth, and list forward operations.
+
+    Parameters
+    ----------
+    dim : int
+        Feature dimension.
+    num_heads : int
+        Number of attention heads.
+    ffn_ratio : float, default 4.0
+        FFN expansion ratio.
+    qkv_bias : bool, default False
+        Whether QKV projections include bias.
+    proj_bias : bool, default True
+        Whether attention projection includes bias.
+    ffn_bias : bool, default True
+        Whether FFN projections include bias.
+    drop : float, default 0.0
+        Dropout probability.
+    attn_drop : float, default 0.0
+        Attention dropout rate.
+    init_values : float, optional
+        LayerScale initialization value.
+    drop_path : float, default 0.0
+        Stochastic depth drop rate.
+    act_layer : callable, default nn.GELU
+        Activation constructor.
+    norm_layer : callable, default nn.LayerNorm
+        Normalization constructor.
+    attn_class : callable, default SelfAttention
+        Self-attention constructor.
+    ffn_layer : callable, default Mlp
+        FFN constructor.
+    mask_k_bias : bool, default False
+        Whether to mask key projection bias.
+    device : torch.device, optional
+        Target allocation device.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -998,7 +1393,10 @@ class SelfAttentionBlock(nn.Module):
 
         return x_ffn
 
-    def forward(self, x_or_x_list, rope_or_rope_list=None) -> List[Tensor]:
+    def forward(
+        self, x_or_x_list: Union[Tensor, List[Tensor]], rope_or_rope_list=None
+    ) -> Union[Tensor, List[Tensor]]:
+        """Forward pass supporting a single tensor or list of crop tensors with RoPE."""
         if isinstance(x_or_x_list, Tensor):
             # for reference:
             # return self._forward(x_or_x_list, rope=rope_or_rope_list)
@@ -1014,6 +1412,29 @@ class SelfAttentionBlock(nn.Module):
 
 
 class CausalSelfAttentionBlock(nn.Module):
+    """
+    Causal self-attention transformer block with LayerScale and MLP feed-forward network.
+
+    Parameters
+    ----------
+    dim : int
+        Embedding dimension.
+    num_heads : int
+        Number of attention heads.
+    ffn_ratio : float, default 4.0
+        FFN hidden dimension multiplier.
+    ls_init_value : float, optional
+        LayerScale initial scaling value.
+    is_causal : bool, default True
+        Whether to enforce causal attention masking.
+    act_layer : callable, default nn.GELU
+        Activation constructor.
+    norm_layer : callable, default nn.LayerNorm
+        Normalization constructor.
+    dropout_prob : float, default 0.0
+        Dropout probability.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -1061,6 +1482,7 @@ class CausalSelfAttentionBlock(nn.Module):
         init_fc_std: float | None = None,
         factor: float = 1.0,
     ) -> None:
+        """Initialize attention and feed-forward parameters."""
         init_attn_std = init_attn_std or (self.dim**-0.5)
         init_proj_std = init_proj_std or init_attn_std * factor
         init_fc_std = init_fc_std or (2 * self.dim) ** -0.5
@@ -1073,8 +1495,8 @@ class CausalSelfAttentionBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-    ):
-
+    ) -> torch.Tensor:
+        """Forward pass through causal block."""
         x_attn = x + self.ls1(self.attention(self.attention_norm(x), self.is_causal))
         x_ffn = x_attn + self.ls2(self.feed_forward(self.ffn_norm(x_attn)))
         return x_ffn
@@ -1084,14 +1506,56 @@ class CausalSelfAttentionBlock(nn.Module):
 EPS = 1e-12
 
 
-def scale(t, amax_t):
+def scale(t: Tensor, amax_t: Tensor) -> Tuple[Tensor, Tensor]:
+    """
+    Scale a floating-point tensor to FP8 (float8_e4m3fn) with dynamic range clamping.
+
+    Parameters
+    ----------
+    t : torch.Tensor
+        Input tensor to scale.
+    amax_t : torch.Tensor
+        Maximum absolute value of `t`.
+
+    Returns
+    -------
+    tuple of (torch.Tensor, torch.Tensor)
+        FP8 tensor and scaling factor tensor.
+    """
     max_v = torch.finfo(torch.float8_e4m3fn).max
     scale_t = torch.clamp(amax_t.float(), min=EPS) / max_v
     t_fp8 = (t / scale_t).to(torch.float8_e4m3fn)
     return t_fp8, scale_t
 
 
-def matmul(first, amax_first, second_t, amax_second_t, bias):
+def matmul(
+    first: Tensor,
+    amax_first: Tensor,
+    second_t: Tensor,
+    amax_second_t: Tensor,
+    bias: Optional[Tensor],
+) -> Tensor:
+    """
+    Execute FP8 scaled matrix multiplication using PyTorch `_scaled_mm` kernel.
+
+    Parameters
+    ----------
+    first : torch.Tensor
+        First input matrix.
+    amax_first : torch.Tensor
+        Maximum absolute value of first input.
+    second_t : torch.Tensor
+        Transposed second input matrix.
+    amax_second_t : torch.Tensor
+        Maximum absolute value of second input.
+    bias : torch.Tensor, optional
+        Bias tensor to add.
+
+    Returns
+    -------
+    torch.Tensor
+        Resulting matrix in bfloat16.
+    """
     first_fp8, scale_first = scale(first, amax_first)
     second_t_fp8, scale_second_t = scale(second_t, amax_second_t)
     # PyTorch's row-wise scaled matmul kernel is based on CUTLASS and is quite
@@ -1114,8 +1578,11 @@ def matmul(first, amax_first, second_t, amax_second_t, bias):
 
 @torch.compiler.allow_in_graph
 class Fp8LinearFn(torch.autograd.Function):
+    """Autograd function executing FP8 linear transformation with dynamic scale calculation."""
+
     @staticmethod
-    def forward(ctx, a, b_t, bias):
+    def forward(ctx, a: Tensor, b_t: Tensor, bias: Optional[Tensor]) -> Tensor:
+        """Forward pass in FP8."""
         amax_a = a.abs().amax(dim=-1, keepdim=True)
         amax_b_t = b_t.abs().amax(dim=-1, keepdim=True)
         out = matmul(a, amax_a, b_t, amax_b_t, bias)
@@ -1129,7 +1596,10 @@ class Fp8LinearFn(torch.autograd.Function):
         return out
 
     @staticmethod
-    def backward(ctx, grad_out):
+    def backward(
+        ctx, grad_out: Tensor
+    ) -> Tuple[Optional[Tensor], Optional[Tensor], Optional[Tensor]]:
+        """Backward pass computing gradients for inputs, weights, and biases."""
         a, b_t, amax_b = ctx.saved_tensors
 
         if ctx.a_requires_grad:
@@ -1152,14 +1622,20 @@ class Fp8LinearFn(torch.autograd.Function):
 
 
 class Fp8Linear(torch.nn.Linear):
+    """Linear layer using FP8 matrix multiplication with dynamic row-wise scaling."""
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Forward pass through FP8 linear layer."""
         out = Fp8LinearFn.apply(input.flatten(end_dim=-2), self.weight, self.bias)
         out = out.unflatten(0, input.shape[:-1])
         return out
 
 
 class Fp8LinearKMaskedBias(LinearKMaskedBias):
+    """FP8 Linear layer with masked key projection bias."""
+
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        """Forward pass through FP8 linear layer with key bias mask."""
         masked_bias = self.bias * self.bias_mask if self.bias is not None else None
         out = Fp8LinearFn.apply(input.flatten(end_dim=-2), self.weight, masked_bias)
         out = out.unflatten(0, input.shape[:-1])
@@ -1169,6 +1645,21 @@ class Fp8LinearKMaskedBias(LinearKMaskedBias):
 def convert_linears_to_fp8(
     root_module: torch.nn.Module, *, filter: str
 ) -> torch.nn.Module:
+    """
+    Convert matching linear layers in a module hierarchy to FP8 linear layers.
+
+    Parameters
+    ----------
+    root_module : torch.nn.Module
+        Root module to search and convert.
+    filter : str
+        Regex pattern matching module names to convert.
+
+    Returns
+    -------
+    torch.nn.Module
+        Module with converted FP8 layers.
+    """
     filter_re = re.compile(filter)
     total_count = 0
 
@@ -1216,6 +1707,21 @@ def convert_linears_to_fp8(
 
 # layers.layer_scale
 class LayerScale(nn.Module):
+    """
+    LayerScale module with learnable diagonal parameters.
+
+    Parameters
+    ----------
+    dim : int
+        Channel dimensionality.
+    init_values : float or torch.Tensor, default 1e-5
+        Initial scaling value.
+    inplace : bool, default False
+        Whether to perform multiplication in-place.
+    device : torch.device, optional
+        Target device.
+    """
+
     def __init__(
         self,
         dim: int,
@@ -1229,16 +1735,19 @@ class LayerScale(nn.Module):
         self.init_values = init_values
 
     def reset_parameters(self):
+        """Reset gamma values to init_values."""
         nn.init.constant_(self.gamma, self.init_values)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Scale input tensor."""
         return x.mul_(self.gamma) if self.inplace else x * self.gamma
 
 
 # layers.patch_embed
 
 
-def make_2tuple(x):
+def make_2tuple(x: Union[int, Tuple[int, int]]) -> Tuple[int, int]:
+    """Convert integer or tuple to a 2-element tuple."""
     if isinstance(x, tuple):
         assert len(x) == 2
         return x
@@ -1249,14 +1758,22 @@ def make_2tuple(x):
 
 class PatchEmbed(nn.Module):
     """
-    2D image to patch embedding: (B,C,H,W) -> (B,N,D)
+    2D image to patch embedding: (B,C,H,W) -> (B,N,D) or (B,H_p,W_p,D)
 
-    Args:
-        img_size: Image size.
-        patch_size: Patch token size.
-        in_chans: Number of input image channels.
-        embed_dim: Number of linear projection output channels.
-        norm_layer: Normalization layer.
+    Parameters
+    ----------
+    img_size : int or tuple of int, default 224
+        Input image resolution.
+    patch_size : int or tuple of int, default 16
+        Patch token resolution.
+    in_chans : int, default 3
+        Number of input channels.
+    embed_dim : int, default 768
+        Linear projection output dimension.
+    norm_layer : callable, optional
+        Normalization layer constructor.
+    flatten_embedding : bool, default True
+        Whether to flatten spatial dimensions.
     """
 
     def __init__(
@@ -1293,6 +1810,7 @@ class PatchEmbed(nn.Module):
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x: Tensor) -> Tensor:
+        """Convert input images to patch representations."""
         _, _, H, W = x.shape
         # patch_H, patch_W = self.patch_size
         # assert H % patch_H == 0, f"Input image height {H} is not a multiple of patch height {patch_H}"
@@ -1307,6 +1825,7 @@ class PatchEmbed(nn.Module):
         return x
 
     def flops(self) -> float:
+        """Calculate FLOP count for patch projection."""
         Ho, Wo = self.patches_resolution
         flops = (
             Ho
@@ -1320,6 +1839,7 @@ class PatchEmbed(nn.Module):
         return flops
 
     def reset_parameters(self):
+        """Reinitialize patch projection convolution weights."""
         k = 1 / (self.in_chans * (self.patch_size[0] ** 2))
         nn.init.uniform_(self.proj.weight, -math.sqrt(k), math.sqrt(k))
         if self.proj.bias is not None:
@@ -1330,18 +1850,31 @@ class PatchEmbed(nn.Module):
 
 
 class RMSNorm(nn.Module):
+    """
+    Root Mean Square Layer Normalization (RMSNorm).
+
+    Parameters
+    ----------
+    dim : int
+        Feature dimension.
+    eps : float, default 1e-5
+        Epsilon for numerical stability.
+    """
+
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
         self.eps = eps
 
     def reset_parameters(self) -> None:
+        """Reset weight parameters to ones."""
         nn.init.constant_(self.weight, 1)
 
     def _norm(self, x: Tensor) -> Tensor:
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x: Tensor) -> Tensor:
+        """Apply RMSNorm to input tensor."""
         output = self._norm(x.float()).type_as(x)
         return output * self.weight
 
@@ -1352,6 +1885,35 @@ class RMSNorm(nn.Module):
 # RoPE positional embedding with no mixing of coordinates (axial) and no learnable weights
 # Supports two parametrizations of the rope parameters: either using `base` or `min_period` and `max_period`.
 class RopePositionEmbedding(nn.Module):
+    """
+    2D Axial Rotary Position Embedding (RoPE) with optional coordinate normalization, shifting, and jittering.
+
+    Parameters
+    ----------
+    embed_dim : int
+        Model embedding dimension.
+    num_heads : int
+        Number of attention heads.
+    base : float, optional, default 100.0
+        RoPE base frequency.
+    min_period : float, optional
+        Minimum period when specifying period range.
+    max_period : float, optional
+        Maximum period when specifying period range.
+    normalize_coords : {"min", "max", "separate"}, default "separate"
+        Spatial coordinate normalization strategy.
+    shift_coords : float, optional
+        Random shift applied to coordinates during training.
+    jitter_coords : float, optional
+        Random multiplicative jitter applied to coordinates during training.
+    rescale_coords : float, optional
+        Random scaling factor applied to coordinates during training.
+    dtype : torch.dtype, optional
+        Computation data type for trigonometric buffers.
+    device : torch.device, optional
+        Target device for buffer allocation.
+    """
+
     def __init__(
         self,
         embed_dim: int,
@@ -1395,6 +1957,21 @@ class RopePositionEmbedding(nn.Module):
         self._init_weights()
 
     def forward(self, *, H: int, W: int) -> tuple[Tensor, Tensor]:
+        """
+        Compute (sin, cos) rotary position embeddings for an `(H, W)` spatial grid.
+
+        Parameters
+        ----------
+        H : int
+            Patch grid height.
+        W : int
+            Patch grid width.
+
+        Returns
+        -------
+        tuple of (torch.Tensor, torch.Tensor)
+            `(sin, cos)` tensors of shape `(H * W, D_head)`.
+        """
         device = self.periods.device
         dtype = self.dtype
         dd = {"device": device, "dtype": dtype}
@@ -1452,6 +2029,7 @@ class RopePositionEmbedding(nn.Module):
         return (sin, cos)  # 2 * [HW, D]
 
     def _init_weights(self):
+        """Compute frequency period buffer values."""
         device = self.periods.device
         dtype = self.dtype
         if self.base is not None:

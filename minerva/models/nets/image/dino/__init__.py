@@ -15,6 +15,29 @@ from torch.nn.init import trunc_normal_, orthogonal_
 
 
 class DINOHead(nn.Module):
+    """
+    Projection and classification head for DINOv2 and DINOv3 architectures.
+
+    Parameters
+    ----------
+    in_dim : int
+        Input feature dimension from the backbone.
+    out_dim : int
+        Output projection dimension (number of prototypes).
+    use_bn : bool, default False
+        Whether to use batch normalization in the intermediate MLP layers.
+    nlayers : int, default 3
+        Number of layers in the projection MLP.
+    hidden_dim : int, default 2048
+        Hidden dimension size in the MLP.
+    bottleneck_dim : int, default 256
+        Bottleneck dimension size before the final linear layer.
+    mlp_bias : bool, default True
+        Whether to include bias in MLP linear layers.
+    dino_version : {2, 3}, default 3
+        DINO version formulation (2 uses normalized last layer with learnable scale g, 3 uses standard linear).
+    """
+
     def __init__(
         self,
         in_dim,
@@ -50,6 +73,7 @@ class DINOHead(nn.Module):
             raise ValueError(f"Unknown DINO version: {self.dino_version}. Use 2 or 3.")
 
     def init_weights(self) -> None:
+        """Initialize head weights with truncated normal distributions and scale parameters."""
         self.apply(self._init_weights)
         if hasattr(self, "weight_g"):
             self.weight_g.data.fill_(1.0)
@@ -62,6 +86,23 @@ class DINOHead(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, x, no_last_layer=False, only_last_layer=False):
+        """
+        Forward pass through the projection head.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input feature tensor of shape `(B, in_dim)` or `(B, bottleneck_dim)` if `only_last_layer=True`.
+        no_last_layer : bool, default False
+            If True, returns the L2-normalized bottleneck representation without applying the final projection.
+        only_last_layer : bool, default False
+            If True, applies only the final linear projection layer to input bottleneck representations.
+
+        Returns
+        -------
+        torch.Tensor
+            Projected output tensor.
+        """
         if not only_last_layer:
             x = self.mlp(x)
             eps = 1e-6 if x.dtype == torch.float16 else 1e-12
@@ -82,6 +123,29 @@ class DINOHead(nn.Module):
 def _build_mlp(
     nlayers, in_dim, bottleneck_dim, hidden_dim=None, use_bn=False, bias=True
 ):
+    """
+    Construct multi-layer perceptron (MLP) sequence for the DINO projection head.
+
+    Parameters
+    ----------
+    nlayers : int
+        Total number of linear layers.
+    in_dim : int
+        Input feature dimension.
+    bottleneck_dim : int
+        Output bottleneck dimension.
+    hidden_dim : int, optional
+        Intermediate hidden layer dimension.
+    use_bn : bool, default False
+        Whether to insert BatchNorm1d after hidden layers.
+    bias : bool, default True
+        Whether linear layers include bias.
+
+    Returns
+    -------
+    nn.Sequential or nn.Linear
+        Constructed MLP module.
+    """
     if nlayers == 1:
         return nn.Linear(in_dim, bottleneck_dim, bias=bias)
     else:
@@ -99,6 +163,20 @@ def _build_mlp(
 
 
 def get_activation_checkpoint_wrapper(checkpointing_full: bool):
+    """
+    Get full or selective PyTorch distributed activation checkpointing wrapper function.
+
+    Parameters
+    ----------
+    checkpointing_full : bool
+        If True, applies full module checkpointing. If False, applies selective checkpointing
+        on expensive operations (matmul, attention).
+
+    Returns
+    -------
+    callable
+        Activation checkpoint wrapper callable.
+    """
     from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
         checkpoint_wrapper,
     )
@@ -127,6 +205,23 @@ def get_activation_checkpoint_wrapper(checkpointing_full: bool):
 def wrap_compile_block(
     module: nn.Module, use_cuda_graphs: bool, is_backbone_block: bool
 ) -> nn.Module:
+    """
+    Compile a PyTorch module with optional Triton CUDA graphs optimization.
+
+    Parameters
+    ----------
+    module : nn.Module
+        Module to compile.
+    use_cuda_graphs : bool
+        Whether to enable Triton CUDA graphs for fullgraph execution.
+    is_backbone_block : bool
+        Whether the module is a transformer backbone block.
+
+    Returns
+    -------
+    nn.Module
+        Compiled PyTorch module.
+    """
     if use_cuda_graphs and is_backbone_block:
         module.compile(
             fullgraph=True, dynamic=False, options={"triton.cudagraphs": True}

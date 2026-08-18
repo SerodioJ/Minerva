@@ -26,6 +26,23 @@ from minerva.models.nets.image.dino import (
 
 
 def drop_path(x: Tensor, drop_prob: float = 0.0, training: bool = False) -> Tensor:
+    """
+    Apply stochastic depth (drop path) per sample.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Input tensor.
+    drop_prob : float, default 0.0
+        Drop probability.
+    training : bool, default False
+        Whether currently in training mode.
+
+    Returns
+    -------
+    torch.Tensor
+        Tensor with stochastic depth applied.
+    """
     if drop_prob == 0.0 or not training:
         return x
     keep_prob = 1 - drop_prob
@@ -39,28 +56,36 @@ def drop_path(x: Tensor, drop_prob: float = 0.0, training: bool = False) -> Tens
 
 
 class DropPath(nn.Module):
-    """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks)."""
+    """
+    Drop paths (Stochastic Depth) per sample (when applied in main path of residual blocks).
+
+    Parameters
+    ----------
+    drop_prob : float, optional
+        Drop path probability.
+    """
 
     def __init__(self, drop_prob=None) -> None:
         super(DropPath, self).__init__()
         self.drop_prob = drop_prob
 
     def forward(self, x: Tensor) -> Tensor:
+        """Forward pass applying drop_path."""
         return drop_path(x, self.drop_prob, self.training)
 
 
 class Block(nn.Module):
-    r"""ConvNeXt Block. There are two equivalent implementations:
-    (1) DwConv -> LayerNorm (channels_first) -> 1x1 Conv -> GELU -> 1x1 Conv; all in (N, C, H, W)
-    (2) DwConv -> Permute to (N, H, W, C); LayerNorm (channels_last) -> Linear -> GELU -> Linear; Permute back
-    We use (2) as we find it slightly faster in PyTorch
+    r"""
+    ConvNeXt Block with depthwise convolution, LayerNorm, pointwise linear projections, and LayerScale.
 
-    Args:
-        dim (int): Number of input channels.
-        drop_path (float): Stochastic depth rate. Default: 0.0
-        layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6.
-
-    Source: https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.py
+    Parameters
+    ----------
+    dim : int
+        Number of input/output channels.
+    drop_path : float, default 0.0
+        Stochastic depth drop rate.
+    layer_scale_init_value : float, default 1e-6
+        Initial value for LayerScale gamma parameter.
     """
 
     def __init__(self, dim, drop_path=0.0, layer_scale_init_value=1e-6):
@@ -82,7 +107,8 @@ class Block(nn.Module):
         )
         self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through ConvNeXt block."""
         input = x
         x = self.dwconv(x)
         x = x.permute(0, 2, 3, 1)  # (N, C, H, W) -> (N, H, W, C)
@@ -99,12 +125,17 @@ class Block(nn.Module):
 
 
 class LayerNorm(nn.Module):
-    r"""LayerNorm that supports two data formats: channels_last (default) or channels_first.
-    The ordering of the dimensions in the inputs. channels_last corresponds to inputs with
-    shape (batch_size, height, width, channels) while channels_first corresponds to inputs
-    with shape (batch_size, channels, height, width).
+    r"""
+    LayerNorm supporting both `channels_last` (N, H, W, C) and `channels_first` (N, C, H, W) formats.
 
-    Source: https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.py
+    Parameters
+    ----------
+    normalized_shape : int
+        Feature dimensionality to normalize over.
+    eps : float, default 1e-6
+        Epsilon for numerical stability.
+    data_format : {"channels_last", "channels_first"}, default "channels_last"
+        Input tensor memory layout format.
     """
 
     def __init__(self, normalized_shape, eps=1e-6, data_format="channels_last"):
@@ -118,10 +149,12 @@ class LayerNorm(nn.Module):
         self.normalized_shape = (normalized_shape,)
 
     def init_weights(self):
+        """Initialize weights to ones and biases to zeros."""
         nn.init.ones_(self.weight)
         nn.init.zeros_(self.bias)
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
+        """Apply LayerNorm according to data_format."""
         if self.data_format == "channels_last":
             return F.layer_norm(
                 x, self.normalized_shape, self.weight, self.bias, self.eps
@@ -136,19 +169,26 @@ class LayerNorm(nn.Module):
 
 class ConvNeXt(nn.Module):
     r"""
+    ConvNeXt backbone adapted for DINOv3 self-supervised representation learning.
     Code adapted from https://github.com/facebookresearch/ConvNeXt/blob/main/models/convnext.pyConvNeXt
 
     A PyTorch impl of : `A ConvNet for the 2020s`  -
         https://arxiv.org/pdf/2201.03545.pdf
 
-    Args:
-        in_chans (int): Number of input image channels. Default: 3
-        num_classes (int): Number of classes for classification head. Default: 1000
-        depths (tuple(int)): Number of blocks at each stage. Default: [3, 3, 9, 3]
-        dims (int): Feature dimension at each stage. Default: [96, 192, 384, 768]
-        drop_path_rate (float): Stochastic depth rate. Default: 0.
-        layer_scale_init_value (float): Init value for Layer Scale. Default: 1e-6.
-        patch_size (int | None): Pseudo patch size. Used to resize feature maps to those of a ViT with a given patch size. If None, no resizing is performed
+    Parameters
+    ----------
+    in_chans : int, default 3
+        Number of input image channels.
+    depths : list of int, default [3, 3, 9, 3]
+        Number of blocks in each of the 4 stages.
+    dims : list of int, default [96, 192, 384, 768]
+        Feature dimensions across the 4 stages.
+    drop_path_rate : float, default 0.0
+        Stochastic depth drop rate.
+    layer_scale_init_value : float, default 1e-6
+        LayerScale initialization value.
+    patch_size : int, optional
+        Pseudo patch size to resize output feature maps to match ViT tokens.
     """
 
     def __init__(
@@ -221,6 +261,7 @@ class ConvNeXt(nn.Module):
         self.input_pad_size = 4  # first convolution with kernel_size = 4, stride = 4
 
     def init_weights(self):
+        """Initialize ConvNeXt parameters and LayerScale factors."""
         self.apply(self._init_weights)
         for stage_id, stage in enumerate(self.stages):
             for block_id, block in enumerate(stage):
@@ -244,6 +285,21 @@ class ConvNeXt(nn.Module):
     def forward_features(
         self, x: Tensor | List[Tensor], masks: Optional[Tensor] = None
     ) -> List[Dict[str, Tensor]]:
+        """
+        Extract token features from image tensor or list of crops.
+
+        Parameters
+        ----------
+        x : torch.Tensor or list of torch.Tensor
+            Input images.
+        masks : torch.Tensor, optional
+            Boolean mask tensor.
+
+        Returns
+        -------
+        dict or list of dict
+            Dictionary of token outputs.
+        """
         if isinstance(x, torch.Tensor):
             return self.forward_features_list([x], [masks])[0]
         else:
@@ -252,10 +308,26 @@ class ConvNeXt(nn.Module):
     def forward_features_list(
         self, x_list: List[Tensor], masks_list: List[Tensor]
     ) -> List[Dict[str, Tensor]]:
+        """
+        Extract token features for a list of crops and masks.
+
+        Parameters
+        ----------
+        x_list : list of torch.Tensor
+            List of image crop tensors.
+        masks_list : list of torch.Tensor
+            List of mask tensors.
+
+        Returns
+        -------
+        list of dict
+            List of feature dictionary outputs per crop.
+        """
         output = []
         for x, masks in zip(x_list, masks_list):
             h, w = x.shape[-2:]
             for i in range(4):
+                self.downsample_layers[i](x)
                 x = self.downsample_layers[i](x)
                 x = self.stages[i](x)
             x_pool = x.mean([-2, -1])  # global average pooling, (N, C, H, W) -> (N, C)
@@ -275,14 +347,27 @@ class ConvNeXt(nn.Module):
 
         return output
 
-    def forward(self, *args, is_training=False, **kwargs):
+    def forward(self, *args, is_training: bool = False, **kwargs):
+        """
+        Forward pass returning feature dictionary (training) or pooled representation (eval).
+
+        Parameters
+        ----------
+        is_training : bool, default False
+            Whether returning full training feature dict.
+
+        Returns
+        -------
+        torch.Tensor or dict
+            Output tensor or feature dict.
+        """
         ret = self.forward_features(*args, **kwargs)
         if is_training:
             return ret
         else:
             return self.head(ret["x_norm_clstoken"])
 
-    def _get_intermediate_layers(self, x, n=1):
+    def _get_intermediate_layers(self, x: Tensor, n: Union[int, Sequence] = 1):
         h, w = x.shape[-2:]
         output, total_block_len = [], len(self.downsample_layers)
         blocks_to_take = (
@@ -315,12 +400,33 @@ class ConvNeXt(nn.Module):
 
     def get_intermediate_layers(
         self,
-        x,
+        x: Tensor,
         n: Union[int, Sequence] = 1,  # Layers or n last layers to take,
         reshape: bool = False,
         return_class_token: bool = False,
         norm: bool = True,
     ):
+        """
+        Extract intermediate stage outputs from ConvNeXt.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Input image tensor.
+        n : int or sequence of int, default 1
+            Stages to return.
+        reshape : bool, default False
+            Whether to keep (N, C, H, W) spatial map layout.
+        return_class_token : bool, default False
+            Whether to return pooled CLS token alongside patch features.
+        norm : bool, default True
+            Whether to normalize stage outputs.
+
+        Returns
+        -------
+        tuple
+            Intermediate stage representations.
+        """
         outputs = self._get_intermediate_layers(x, n)
 
         if norm:
@@ -354,6 +460,7 @@ class ConvNeXt(nn.Module):
         return tuple(outputs)
 
     def activation_checkpoint(self, checkpointing_full: bool = False):
+        """Apply activation checkpointing to ConvNeXt stages and downsampling layers."""
         _checkpointing_wrapper = get_activation_checkpoint_wrapper(checkpointing_full)
         for stage_id, stage in enumerate(self.stages):
             for block_id, block in enumerate(stage):
@@ -362,6 +469,7 @@ class ConvNeXt(nn.Module):
             self.downsample_layers[dsl_id] = _checkpointing_wrapper(dsl)
 
     def compile(self, use_cuda_graphs: bool = False):
+        """Compile stages and downsample layers with torch.compile."""
         assert isinstance(self.stages, nn.ModuleList)
         # Compile at stage level
         for stage_id, stage in enumerate(self.stages):
@@ -375,6 +483,7 @@ class ConvNeXt(nn.Module):
             )
 
     def fsdp(self, fsdp_config: Dict[str, Any]):
+        """Wrap ConvNeXt stages and downsampling layers with FSDP."""
         stages = self.stages
         assert isinstance(stages, nn.ModuleList)
         # FSDP wrap at stage level
@@ -419,7 +528,20 @@ convnext_sizes = {
 }
 
 
-def get_convnext_arch(arch_name):
+def get_convnext_arch(arch_name: str) -> partial:
+    """
+    Retrieve ConvNeXt architecture constructor for a given size name (e.g. 'convnext_tiny').
+
+    Parameters
+    ----------
+    arch_name : str
+        Architecture size name (e.g. 'convnext_tiny', 'convnext_small', 'convnext_base', 'convnext_large').
+
+    Returns
+    -------
+    functools.partial
+        Partially applied ConvNeXt constructor.
+    """
     size_dict = None
     query_sizename = arch_name.split("_")[1]
     try:
