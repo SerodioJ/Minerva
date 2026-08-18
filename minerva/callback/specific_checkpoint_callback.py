@@ -1,5 +1,7 @@
 from lightning import Callback, LightningModule, Trainer
-from typing import Optional, List, Union, Dict
+import torch.distributed.checkpoint as dcp
+from torch.distributed.checkpoint.state_dict import get_model_state_dict
+from typing import Optional, List, Union, Dict, Any
 from pathlib import Path
 
 
@@ -40,18 +42,18 @@ class SpecificCheckpointCallback(Callback):
         self.step_var_name = step_var_name or "global_step"
         epochs_expanded = []
         for value in self.specific_epochs:
-            if type(value) == int:
+            if type(value) is int:
                 epochs_expanded += [value]
-            elif type(value) == dict:
+            elif type(value) is dict:
                 epochs_expanded += list(
                     range(value["start"], value["stop"], value["step"])
                 )
         self.specific_epochs = epochs_expanded
         steps_expanded = []
         for value in self.specific_steps:
-            if type(value) == int:
+            if type(value) is int:
                 steps_expanded += [value]
-            elif type(value) == dict:
+            elif type(value) is dict:
                 steps_expanded += list(
                     range(value["start"], value["stop"], value["step"])
                 )
@@ -65,14 +67,14 @@ class SpecificCheckpointCallback(Callback):
         self.checkpoint_path = Path(trainer.log_dir) / "checkpoints"
         self.checkpoint_path.mkdir(exist_ok=True)
         if -1 in self.specific_epochs:
-            filename = f"epoch=-1.ckpt"
+            filename = "epoch=-1.ckpt"
             trainer.save_checkpoint(self.checkpoint_path / filename)
 
     def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule):
         """
         Checks the epoch index and saves the checkpoint if specified.
         """
-        curernt_epoch = None
+        current_epoch = None
         if hasattr(pl_module, self.epoch_var_name):
             current_epoch = getattr(pl_module, self.epoch_var_name)
         elif hasattr(trainer, self.epoch_var_name):
@@ -95,3 +97,102 @@ class SpecificCheckpointCallback(Callback):
         if global_step is not None and global_step in self.specific_steps:
             filename = f"step={global_step}.ckpt"
             trainer.save_checkpoint(self.checkpoint_path / filename)
+
+
+class FilterWeights(Callback):
+    """
+    Lightning callback to filter out specific keys from the model state_dict before saving checkpoints.
+
+    Parameters
+    ----------
+    filter_values : str or list of str
+        Substring pattern or list of substring patterns. Any state_dict key containing
+        one of these values will be excluded from the saved checkpoint.
+    """
+
+    def __init__(self, filter_values: Union[str, List[str]]):
+        super().__init__()
+        self.filter_values = (
+            filter_values if isinstance(filter_values, list) else [filter_values]
+        )
+
+    def on_save_checkpoint(
+        self, trainer: Trainer, pl_module: LightningModule, checkpoint: Dict[str, Any]
+    ):
+        """
+        Filter out keys matching any `filter_values` from `checkpoint['state_dict']`.
+
+        Parameters
+        ----------
+        trainer : Trainer
+            The PyTorch Lightning Trainer instance.
+        pl_module : LightningModule
+            The LightningModule being checkpointed.
+        checkpoint : dict
+            The checkpoint dictionary containing 'state_dict'.
+        """
+        state_dict = checkpoint["state_dict"]
+        for value in self.filter_values:
+            # Find keys that needs to be filtered
+            keys_to_remove = [k for k in state_dict.keys() if value in k]
+
+            # Remove them from the dictionary before it saves
+            for k in keys_to_remove:
+                del state_dict[k]
+
+
+class EvalCheckpointCallback(Callback):
+    """
+    Lightning callback to asynchronously save distributed checkpoints (DCP) of a specific model attribute
+    (e.g., EMA model) periodically during training for evaluation.
+
+    Parameters
+    ----------
+    period : int
+        Step interval at which to save evaluation checkpoints. If <= 0, no checkpoints are saved.
+    name : str
+        Subdirectory name under which to store the checkpoint.
+    model_attr : str, default "model_ema"
+        Name of the LightningModule attribute whose state dict will be saved.
+    """
+
+    def __init__(self, period: int, name: str, model_attr: str = "model_ema"):
+        super().__init__()
+        self.period = period
+        self.name = name
+        self.model_attr = model_attr
+
+    def on_train_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs,
+        batch,
+        batch_idx: int,
+    ):
+        """
+        Save distributed checkpoint if the current step matches the configured period.
+
+        Parameters
+        ----------
+        trainer : Trainer
+            The PyTorch Lightning Trainer instance.
+        pl_module : LightningModule
+            The LightningModule being trained.
+        outputs : Any
+            The outputs from the training step.
+        batch : Any
+            The current batch.
+        batch_idx : int
+            The index of the current batch.
+        """
+        step = trainer.global_step
+        if self.period > 0 and (step + 1) % self.period == 0:
+            root = trainer.log_dir or trainer.default_root_dir
+            ckpt_dir = Path(root) / "eval" / f"training_{step}" / self.name
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            model = getattr(pl_module, self.model_attr)
+            state_dict = get_model_state_dict(model)
+            dcp.save(state_dict=state_dict, checkpoint_id=str(ckpt_dir))
+
+            trainer.strategy.barrier("async_checkpoint_save")
