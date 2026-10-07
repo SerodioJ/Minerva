@@ -825,7 +825,6 @@ class _DINO(_SSLTechnique):
         ):
             self.update_gram()
             self.gram.num_updates += 1
-        timestamp = time.time()
 
         # 9. Logging
         log_kwargs = {"on_step": True, "on_epoch": False, "sync_dist": True}
@@ -836,7 +835,7 @@ class _DINO(_SSLTechnique):
         self.log("train/last_layer_lr", last_layer_lr, **log_kwargs)
         for name, value in loss_dict.items():
             self.log(f"train/{name}", value, **log_kwargs)
-        self.log("timestamp", timestamp, **log_kwargs)
+        
 
         return loss
 
@@ -1708,7 +1707,7 @@ class DINOv3(_DINO):
         dict of str to Tensor
             Dictionary containing CLS, register, and patch embeddings before and after projection and centering.
         """
-        n_crops, B, rgb, H, W = images.shape
+        n_crops, B = images.shape[:2]
         images = images.flatten(0, 1)
 
         backbone_out = self.teacher.backbone(images, is_training=True)
@@ -1876,8 +1875,8 @@ class DINOv3(_DINO):
         local_out : dict of str to Tensor
             Student outputs on local crops.
         """
-        n_global_crops, B, rgb, H, W = global_crops.shape
-        n_local_crops, B, rgb, H, W = local_crops.shape
+        n_global_crops, B = global_crops.shape[:2]
+        n_local_crops = local_crops.shape[0]
 
         global_crops = global_crops.flatten(0, 1)
 
@@ -2192,11 +2191,8 @@ def collate_data_and_cast(
                 mask_generator(int(N * random.uniform(prob_min, prob_max)))
             )
         if random_circular_shift:  # apply le random circular shift to
-            shift_x, shift_y = (
-                random.randint(0, mask.shape[0] - 1),
-                random.randint(0, mask.shape[1] - 1),
-            )
-            mask = torch.roll(mask, (shift_x, shift_y), (0, 1))
+            shifts = tuple(random.randint(0, s - 1) for s in mask.shape)
+            mask = torch.roll(mask, shifts, dims=tuple(range(mask.ndim)))
         masks_list.append(mask)
         upperbound += int(N * prob_max)
     for _ in range(n_samples_masked, B):
